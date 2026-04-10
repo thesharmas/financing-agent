@@ -148,3 +148,6 @@ sample_contracts/
 
 # DeepEval cache
 .deepeval/
+
+# Agent config (contains resource IDs)
+src/financing_agent/config.json
