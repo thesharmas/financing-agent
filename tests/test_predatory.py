@@ -6,7 +6,7 @@ These test the detection functions directly — no LLM involved.
 
 import pytest
 
-from mca_analyzer.calculations import MCATerms
+from mca_analyzer.calculations import FinancingTerms
 from mca_analyzer.predatory import (
     Severity,
     analyze_predatory,
@@ -38,7 +38,7 @@ from .fixtures import (
 
 class TestHighFactorRate:
     def test_flags_factor_above_1_4_as_warning(self):
-        terms = MCATerms(
+        terms = FinancingTerms(
             advance_amount=10_000, repayment_type="fixed", factor_rate=1.42,
         )
         flag = detect_high_factor_rate(terms)
@@ -55,7 +55,7 @@ class TestHighFactorRate:
         assert flag is None
 
     def test_no_flag_at_boundary(self):
-        terms = MCATerms(
+        terms = FinancingTerms(
             advance_amount=10_000, repayment_type="fixed", factor_rate=1.40,
         )
         flag = detect_high_factor_rate(terms)
@@ -95,7 +95,7 @@ class TestDailyPayments:
 
     def test_no_flag_for_percentage(self):
         """Percentage-based MCAs don't have a fixed payment frequency to flag."""
-        terms = MCATerms(
+        terms = FinancingTerms(
             advance_amount=50_000, repayment_type="percentage", factor_rate=1.35,
             holdback_pct=0.15, estimated_monthly_revenue=80_000,
         )
@@ -117,7 +117,7 @@ class TestShortTerm:
         assert flag is None
 
     def test_no_flag_when_term_unknown(self):
-        terms = MCATerms(
+        terms = FinancingTerms(
             advance_amount=50_000, repayment_type="fixed", factor_rate=1.35,
         )
         flag = detect_short_term(terms)
@@ -138,7 +138,7 @@ class TestHighOriginationFee:
         assert flag is None
 
     def test_flags_4pct_as_warning(self):
-        terms = MCATerms(
+        terms = FinancingTerms(
             advance_amount=10_000, repayment_type="fixed", factor_rate=1.30,
             origination_fee_pct=0.04,
         )

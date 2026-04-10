@@ -1,6 +1,6 @@
-"""Predatory term detection for MCA offers.
+"""Predatory term detection for SMB financing offers.
 
-Rule-based detection of red flags in MCA terms.
+Rule-based detection of red flags in financing terms.
 Each detector checks one specific concern and returns a RedFlag
 with a severity level and a plain English explanation, or None if clean.
 
@@ -12,7 +12,7 @@ Severity levels:
 from dataclasses import dataclass
 from enum import Enum
 
-from mca_analyzer.calculations import MCATerms, resolve_factor_rate, resolve_origination_fee
+from mca_analyzer.calculations import FinancingTerms, resolve_factor_rate, resolve_origination_fee
 
 
 class Severity(Enum):
@@ -60,7 +60,7 @@ RISK_WEIGHTS = {
 }
 
 
-def detect_high_factor_rate(terms: MCATerms) -> RedFlag | None:
+def detect_high_factor_rate(terms: FinancingTerms) -> RedFlag | None:
     """Flag factor rates above 1.4 as warning, above 1.5 as danger."""
     factor = resolve_factor_rate(terms)
 
@@ -89,7 +89,7 @@ def detect_high_factor_rate(terms: MCATerms) -> RedFlag | None:
     return None
 
 
-def detect_high_apr(terms: MCATerms, effective_apr: float) -> RedFlag | None:
+def detect_high_apr(terms: FinancingTerms, effective_apr: float) -> RedFlag | None:
     """Flag effective APR above 100% as danger."""
     if effective_apr > HIGH_APR:
         return RedFlag(
@@ -104,7 +104,7 @@ def detect_high_apr(terms: MCATerms, effective_apr: float) -> RedFlag | None:
     return None
 
 
-def detect_daily_payments(terms: MCATerms) -> RedFlag | None:
+def detect_daily_payments(terms: FinancingTerms) -> RedFlag | None:
     """Flag daily ACH payments as warning — increases cash flow strain.
 
     Only applies to fixed repayment types. Percentage-based MCAs pull
@@ -123,7 +123,7 @@ def detect_daily_payments(terms: MCATerms) -> RedFlag | None:
     return None
 
 
-def detect_short_term(terms: MCATerms) -> RedFlag | None:
+def detect_short_term(terms: FinancingTerms) -> RedFlag | None:
     """Flag terms under 3 months as warning — often indicates stacking."""
     if terms.term_months is not None and terms.term_months <= SHORT_TERM_MONTHS:
         return RedFlag(
@@ -139,7 +139,7 @@ def detect_short_term(terms: MCATerms) -> RedFlag | None:
     return None
 
 
-def detect_high_origination_fee(terms: MCATerms) -> RedFlag | None:
+def detect_high_origination_fee(terms: FinancingTerms) -> RedFlag | None:
     """Flag origination fees above 3% as warning, above 5% as danger."""
     fee = resolve_origination_fee(terms)
     if fee == 0:
@@ -171,7 +171,7 @@ def detect_high_origination_fee(terms: MCATerms) -> RedFlag | None:
     return None
 
 
-def detect_monthly_minimum(terms: MCATerms) -> RedFlag | None:
+def detect_monthly_minimum(terms: FinancingTerms) -> RedFlag | None:
     """Flag monthly minimum payment on percentage-based MCAs.
 
     A monthly minimum undercuts the main advantage of percentage-based
@@ -212,7 +212,7 @@ def detect_confession_of_judgment(has_coj: bool) -> RedFlag | None:
 
 
 def analyze_predatory(
-    terms: MCATerms, effective_apr: float, has_coj: bool = False
+    terms: FinancingTerms, effective_apr: float, has_coj: bool = False
 ) -> PredatoryAnalysis:
     """Run all predatory detectors and return full analysis.
 

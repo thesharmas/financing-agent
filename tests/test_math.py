@@ -1,4 +1,4 @@
-"""Math correctness evals for MCA calculations.
+"""Math correctness evals for financing calculations.
 
 These are deterministic tests — no LLM involved.
 They define the interface and expected behavior of the calculation functions.
@@ -8,10 +8,11 @@ All must pass at 100% accuracy. Math errors destroy trust.
 import pytest
 
 from mca_analyzer.calculations import (
-    MCATerms,
-    analyze_mca,
+    FinancingTerms,
+    analyze_financing,
     calculate_cents_on_dollar,
     calculate_effective_apr,
+    calculate_escalated_cost,
     calculate_num_payments,
     calculate_payment_amount,
     calculate_total_cost,
@@ -26,10 +27,14 @@ from mca_analyzer.calculations import (
 from .fixtures import (
     AGGRESSIVE_MCA,
     AGGRESSIVE_MCA_EXPECTED,
+    BE_AMAZING_PO,
+    BE_AMAZING_PO_EXPECTED,
     FEE_MCA,
     FEE_MCA_EXPECTED,
     INCOMPLETE_MCA,
     INCOMPLETE_MCA_EXPECTED,
+    LATIN_GOODNESS_RECEIVABLES,
+    LATIN_GOODNESS_RECEIVABLES_EXPECTED,
     NO_FACTOR_MCA,
     NO_FACTOR_MCA_EXPECTED,
     PERCENTAGE_MCA,
@@ -62,6 +67,12 @@ PERCENTAGE_FIXTURES = [
 
 ALL_COMPLETE_FIXTURES = FIXED_FIXTURES + PERCENTAGE_FIXTURES
 
+# Real contract fixtures
+REAL_CONTRACT_FIXTURES = [
+    ("be_amazing_po", BE_AMAZING_PO, BE_AMAZING_PO_EXPECTED),
+    ("latin_goodness", LATIN_GOODNESS_RECEIVABLES, LATIN_GOODNESS_RECEIVABLES_EXPECTED),
+]
+
 
 # --- Step 0: Resolve inputs ---
 
@@ -79,7 +90,7 @@ class TestResolveInputs:
         assert result == pytest.approx(STATED_COST_MCA_EXPECTED["factor_rate"])
 
     def test_raises_if_no_pricing(self):
-        terms = MCATerms(advance_amount=10_000, repayment_type="fixed")
+        terms = FinancingTerms(advance_amount=10_000, repayment_type="fixed")
         with pytest.raises(ValueError):
             resolve_factor_rate(terms)
 
@@ -108,7 +119,7 @@ class TestResolveInputs:
 
 
 class TestTotalRepayment:
-    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES)
+    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES + REAL_CONTRACT_FIXTURES)
     def test_total_repayment(self, name, terms, expected):
         result = calculate_total_repayment(terms)
         assert result == pytest.approx(expected["total_repayment"], rel=1e-4), (
@@ -116,7 +127,7 @@ class TestTotalRepayment:
         )
 
     def test_factor_rate_of_1_means_no_cost(self):
-        terms = MCATerms(
+        terms = FinancingTerms(
             advance_amount=10_000, repayment_type="fixed", factor_rate=1.0,
         )
         assert calculate_total_repayment(terms) == 10_000.0
@@ -134,7 +145,7 @@ class TestTotalRepayment:
 
 
 class TestTotalCost:
-    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES)
+    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES + REAL_CONTRACT_FIXTURES)
     def test_total_cost(self, name, terms, expected):
         result = calculate_total_cost(terms)
         assert result == pytest.approx(expected["total_cost"], rel=1e-4), (
@@ -142,10 +153,6 @@ class TestTotalCost:
         )
 
     def test_fee_deducted_increases_cost(self):
-        """Same offer: fee deducted vs paid separately should give same total cost."""
-        # When fee is deducted: cost = repayment - effective_advance
-        # When fee is separate: cost = (repayment - advance) + fee
-        # Both should equal the same total cost
         result_deducted = calculate_total_cost(PREDATORY_MCA)
         assert result_deducted == pytest.approx(15_000.0, rel=1e-4)
 
@@ -166,18 +173,20 @@ class TestTermResolution:
         assert result == pytest.approx(PERCENTAGE_MCA_EXPECTED["estimated_term_months"], rel=1e-2)
 
     def test_term_from_fixed_payment(self):
-        terms = MCATerms(
-            advance_amount=50_000,
-            repayment_type="fixed",
-            factor_rate=1.35,
-            fixed_payment=535.71,
-            payment_frequency="daily",
+        terms = FinancingTerms(
+            advance_amount=50_000, repayment_type="fixed", factor_rate=1.35,
+            fixed_payment=535.71, payment_frequency="daily",
         )
         result = resolve_term_months(terms)
         assert result == pytest.approx(6.0, rel=1e-2)
 
     def test_term_none_if_insufficient_data(self):
         assert resolve_term_months(INCOMPLETE_MCA) is None
+
+    def test_term_from_days(self):
+        """term_days should convert to months via / 30."""
+        result = resolve_term_months(BE_AMAZING_PO)
+        assert result == pytest.approx(BE_AMAZING_PO_EXPECTED["estimated_term_months"], rel=1e-2)
 
 
 # --- Step 3: Number of Payments ---
@@ -191,19 +200,22 @@ class TestNumPayments:
             f"[{name}] num_payments: got {result}, expected {expected['num_payments']}"
         )
 
+    def test_lump_sum_is_one_payment(self):
+        assert calculate_num_payments(BE_AMAZING_PO) == 1
+
     def test_daily_uses_21_business_days(self):
-        terms = MCATerms(
+        terms = FinancingTerms(
             advance_amount=10_000, repayment_type="fixed", factor_rate=1.2,
             term_months=1, payment_frequency="daily",
         )
         assert calculate_num_payments(terms) == 21
 
     def test_weekly_uses_4_33_weeks(self):
-        terms = MCATerms(
+        terms = FinancingTerms(
             advance_amount=10_000, repayment_type="fixed", factor_rate=1.2,
             term_months=1, payment_frequency="weekly",
         )
-        assert calculate_num_payments(terms) == 4  # round(1 × 4.33) = 4
+        assert calculate_num_payments(terms) == 4
 
     def test_none_if_no_term(self):
         assert calculate_num_payments(INCOMPLETE_MCA) is None
@@ -220,8 +232,12 @@ class TestPaymentAmount:
             f"[{name}] payment_amount: got {result}, expected {expected['payment_amount']}"
         )
 
+    def test_lump_sum_payment_is_total(self):
+        result = calculate_payment_amount(BE_AMAZING_PO)
+        assert result == pytest.approx(BE_AMAZING_PO_EXPECTED["payment_amount"])
+
     def test_fixed_payment_used_directly(self):
-        terms = MCATerms(
+        terms = FinancingTerms(
             advance_amount=50_000, repayment_type="fixed", factor_rate=1.35,
             fixed_payment=600.0, payment_frequency="daily",
         )
@@ -239,7 +255,7 @@ class TestPaymentAmount:
 
 
 class TestEffectiveAPR:
-    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES)
+    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES + REAL_CONTRACT_FIXTURES)
     def test_effective_apr(self, name, terms, expected):
         result = calculate_effective_apr(terms)
         assert result == pytest.approx(expected["effective_apr"], rel=1e-2), (
@@ -247,35 +263,34 @@ class TestEffectiveAPR:
         )
 
     def test_shorter_term_means_higher_apr(self):
-        long = MCATerms(
+        long = FinancingTerms(
             advance_amount=50_000, repayment_type="fixed", factor_rate=1.35,
             term_months=12, payment_frequency="daily",
         )
-        short = MCATerms(
+        short = FinancingTerms(
             advance_amount=50_000, repayment_type="fixed", factor_rate=1.35,
             term_months=6, payment_frequency="daily",
         )
         assert calculate_effective_apr(short) > calculate_effective_apr(long)
 
     def test_higher_factor_means_higher_apr(self):
-        low = MCATerms(
+        low = FinancingTerms(
             advance_amount=50_000, repayment_type="fixed", factor_rate=1.15,
             term_months=6, payment_frequency="daily",
         )
-        high = MCATerms(
+        high = FinancingTerms(
             advance_amount=50_000, repayment_type="fixed", factor_rate=1.45,
             term_months=6, payment_frequency="daily",
         )
         assert calculate_effective_apr(high) > calculate_effective_apr(low)
 
     def test_fee_deducted_increases_apr(self):
-        """Fee deducted from advance should produce higher APR than fee paid separately."""
-        separate = MCATerms(
+        separate = FinancingTerms(
             advance_amount=50_000, repayment_type="fixed", factor_rate=1.30,
             term_months=6, payment_frequency="daily",
             origination_fee=2_500, fee_deducted_from_advance=False,
         )
-        deducted = MCATerms(
+        deducted = FinancingTerms(
             advance_amount=50_000, repayment_type="fixed", factor_rate=1.30,
             term_months=6, payment_frequency="daily",
             origination_fee=2_500, fee_deducted_from_advance=True,
@@ -297,7 +312,6 @@ class TestWorstCaseAPR:
         assert calculate_worst_case_apr(STANDARD_MCA) is None
 
     def test_worst_case_lower_than_estimated(self):
-        """Worst case APR is lower because term is longer (same cost spread over more time)."""
         estimated = calculate_effective_apr(PERCENTAGE_MIN_MCA)
         worst = calculate_worst_case_apr(PERCENTAGE_MIN_MCA)
         assert worst < estimated
@@ -307,7 +321,7 @@ class TestWorstCaseAPR:
 
 
 class TestCentsOnDollar:
-    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES)
+    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES + REAL_CONTRACT_FIXTURES)
     def test_cents_on_dollar(self, name, terms, expected):
         result = calculate_cents_on_dollar(terms)
         assert result == pytest.approx(expected["cents_on_dollar"], rel=1e-2), (
@@ -315,17 +329,50 @@ class TestCentsOnDollar:
         )
 
     def test_fee_deducted_increases_cents(self):
-        """Fee deducted means less cash received, so cost per dollar is higher."""
         result = calculate_cents_on_dollar(PREDATORY_MCA)
-        assert result > 0.60  # Would be 0.60 without fee deduction
+        assert result > 0.60
+
+
+# --- Cost Escalation ---
+
+
+class TestCostEscalation:
+    def test_be_amazing_30_days_late(self):
+        result = calculate_escalated_cost(BE_AMAZING_PO, 30)
+        assert result == pytest.approx(BE_AMAZING_PO_EXPECTED["escalated_cost_30_days"], rel=1e-2)
+
+    def test_be_amazing_90_days_late(self):
+        result = calculate_escalated_cost(BE_AMAZING_PO, 90)
+        assert result == pytest.approx(BE_AMAZING_PO_EXPECTED["escalated_cost_90_days"], rel=1e-2)
+
+    def test_latin_goodness_30_days_late(self):
+        result = calculate_escalated_cost(LATIN_GOODNESS_RECEIVABLES, 30)
+        assert result == pytest.approx(
+            LATIN_GOODNESS_RECEIVABLES_EXPECTED["escalated_cost_30_days"], rel=1e-2
+        )
+
+    def test_latin_goodness_90_days_late(self):
+        result = calculate_escalated_cost(LATIN_GOODNESS_RECEIVABLES, 90)
+        assert result == pytest.approx(
+            LATIN_GOODNESS_RECEIVABLES_EXPECTED["escalated_cost_90_days"], rel=1e-2
+        )
+
+    def test_no_escalation_without_structure(self):
+        assert calculate_escalated_cost(STANDARD_MCA, 30) is None
+
+    def test_within_grace_period_no_cost(self):
+        """During grace period, no late fees should apply."""
+        result = calculate_escalated_cost(BE_AMAZING_PO, 5)  # Within 7-day grace
+        assert result is None
 
 
 # --- Full Analysis ---
 
 
-class TestAnalyzeMCA:
-    def test_complete_analysis(self):
-        result = analyze_mca(STANDARD_MCA)
+class TestAnalyzeFinancing:
+    def test_complete_mca_analysis(self):
+        result = analyze_financing(STANDARD_MCA)
+        assert result.product_type == "mca"
         assert result.total_repayment == pytest.approx(67_500.0)
         assert result.total_cost_of_capital == pytest.approx(17_500.0)
         assert result.effective_apr == pytest.approx(70.0, rel=1e-2)
@@ -336,7 +383,7 @@ class TestAnalyzeMCA:
         assert result.missing_fields == []
 
     def test_incomplete_analysis(self):
-        result = analyze_mca(INCOMPLETE_MCA)
+        result = analyze_financing(INCOMPLETE_MCA)
         assert result.total_repayment == pytest.approx(67_500.0)
         assert result.cents_on_dollar == pytest.approx(0.35, rel=1e-2)
         assert result.effective_apr is None
@@ -345,11 +392,25 @@ class TestAnalyzeMCA:
         assert len(result.missing_fields) > 0
 
     def test_worst_case_populated(self):
-        result = analyze_mca(PERCENTAGE_MIN_MCA)
+        result = analyze_financing(PERCENTAGE_MIN_MCA)
         assert result.worst_case_term_months == pytest.approx(13.5, rel=1e-2)
         assert result.worst_case_apr == pytest.approx(31.11, rel=1e-2)
 
     def test_worst_case_none_without_minimum(self):
-        result = analyze_mca(STANDARD_MCA)
+        result = analyze_financing(STANDARD_MCA)
         assert result.worst_case_term_months is None
         assert result.worst_case_apr is None
+
+    def test_po_financing_analysis(self):
+        result = analyze_financing(BE_AMAZING_PO)
+        assert result.product_type == "po_financing"
+        assert result.effective_apr == pytest.approx(12.0, rel=1e-2)
+        assert result.num_payments == 1
+        assert result.escalation_description is not None
+        assert result.escalated_cost_30_days == pytest.approx(7_948.80, rel=1e-2)
+
+    def test_receivables_purchase_analysis(self):
+        result = analyze_financing(LATIN_GOODNESS_RECEIVABLES)
+        assert result.product_type == "receivables_purchase"
+        assert result.effective_apr == pytest.approx(14.79, rel=1e-2)
+        assert result.escalated_cost_90_days == pytest.approx(5_739.90, rel=1e-2)
