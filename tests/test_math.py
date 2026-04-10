@@ -27,20 +27,26 @@ from mca_analyzer.calculations import (
 from .fixtures import (
     AGGRESSIVE_MCA,
     AGGRESSIVE_MCA_EXPECTED,
-    BE_AMAZING_PO,
-    BE_AMAZING_PO_EXPECTED,
     FEE_MCA,
     FEE_MCA_EXPECTED,
+    FIXED_WEEKLY_TERM_LOAN,
+    FIXED_WEEKLY_TERM_LOAN_EXPECTED,
     INCOMPLETE_MCA,
     INCOMPLETE_MCA_EXPECTED,
-    LATIN_GOODNESS_RECEIVABLES,
-    LATIN_GOODNESS_RECEIVABLES_EXPECTED,
+    LUMP_SUM_PO_FINANCING,
+    LUMP_SUM_PO_FINANCING_EXPECTED,
     NO_FACTOR_MCA,
     NO_FACTOR_MCA_EXPECTED,
+    PERCENTAGE_60DAY_MINIMUM,
+    PERCENTAGE_60DAY_MINIMUM_EXPECTED,
     PERCENTAGE_MCA,
     PERCENTAGE_MCA_EXPECTED,
     PERCENTAGE_MIN_MCA,
     PERCENTAGE_MIN_MCA_EXPECTED,
+    PERCENTAGE_RECEIVABLES,
+    PERCENTAGE_RECEIVABLES_EXPECTED,
+    PERCENTAGE_WITH_STATED_TERM,
+    PERCENTAGE_WITH_STATED_TERM_EXPECTED,
     PREDATORY_MCA,
     PREDATORY_MCA_EXPECTED,
     REASONABLE_MCA,
@@ -67,10 +73,13 @@ PERCENTAGE_FIXTURES = [
 
 ALL_COMPLETE_FIXTURES = FIXED_FIXTURES + PERCENTAGE_FIXTURES
 
-# Real contract fixtures
-REAL_CONTRACT_FIXTURES = [
-    ("be_amazing_po", BE_AMAZING_PO, BE_AMAZING_PO_EXPECTED),
-    ("latin_goodness", LATIN_GOODNESS_RECEIVABLES, LATIN_GOODNESS_RECEIVABLES_EXPECTED),
+# Multi-product fixtures
+MULTI_PRODUCT_FIXTURES = [
+    ("lump_sum_po", LUMP_SUM_PO_FINANCING, LUMP_SUM_PO_FINANCING_EXPECTED),
+    ("pct_receivables", PERCENTAGE_RECEIVABLES, PERCENTAGE_RECEIVABLES_EXPECTED),
+    ("fixed_weekly_loan", FIXED_WEEKLY_TERM_LOAN, FIXED_WEEKLY_TERM_LOAN_EXPECTED),
+    ("pct_60day_min", PERCENTAGE_60DAY_MINIMUM, PERCENTAGE_60DAY_MINIMUM_EXPECTED),
+    ("pct_stated_term", PERCENTAGE_WITH_STATED_TERM, PERCENTAGE_WITH_STATED_TERM_EXPECTED),
 ]
 
 
@@ -119,7 +128,7 @@ class TestResolveInputs:
 
 
 class TestTotalRepayment:
-    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES + REAL_CONTRACT_FIXTURES)
+    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES + MULTI_PRODUCT_FIXTURES)
     def test_total_repayment(self, name, terms, expected):
         result = calculate_total_repayment(terms)
         assert result == pytest.approx(expected["total_repayment"], rel=1e-4), (
@@ -145,7 +154,7 @@ class TestTotalRepayment:
 
 
 class TestTotalCost:
-    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES + REAL_CONTRACT_FIXTURES)
+    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES + MULTI_PRODUCT_FIXTURES)
     def test_total_cost(self, name, terms, expected):
         result = calculate_total_cost(terms)
         assert result == pytest.approx(expected["total_cost"], rel=1e-4), (
@@ -185,8 +194,8 @@ class TestTermResolution:
 
     def test_term_from_days(self):
         """term_days should convert to months via / 30."""
-        result = resolve_term_months(BE_AMAZING_PO)
-        assert result == pytest.approx(BE_AMAZING_PO_EXPECTED["estimated_term_months"], rel=1e-2)
+        result = resolve_term_months(LUMP_SUM_PO_FINANCING)
+        assert result == pytest.approx(LUMP_SUM_PO_FINANCING_EXPECTED["estimated_term_months"], rel=1e-2)
 
 
 # --- Step 3: Number of Payments ---
@@ -201,7 +210,7 @@ class TestNumPayments:
         )
 
     def test_lump_sum_is_one_payment(self):
-        assert calculate_num_payments(BE_AMAZING_PO) == 1
+        assert calculate_num_payments(LUMP_SUM_PO_FINANCING) == 1
 
     def test_daily_uses_21_business_days(self):
         terms = FinancingTerms(
@@ -233,8 +242,8 @@ class TestPaymentAmount:
         )
 
     def test_lump_sum_payment_is_total(self):
-        result = calculate_payment_amount(BE_AMAZING_PO)
-        assert result == pytest.approx(BE_AMAZING_PO_EXPECTED["payment_amount"])
+        result = calculate_payment_amount(LUMP_SUM_PO_FINANCING)
+        assert result == pytest.approx(LUMP_SUM_PO_FINANCING_EXPECTED["payment_amount"])
 
     def test_fixed_payment_used_directly(self):
         terms = FinancingTerms(
@@ -255,7 +264,7 @@ class TestPaymentAmount:
 
 
 class TestEffectiveAPR:
-    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES + REAL_CONTRACT_FIXTURES)
+    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES + MULTI_PRODUCT_FIXTURES)
     def test_effective_apr(self, name, terms, expected):
         result = calculate_effective_apr(terms)
         assert result == pytest.approx(expected["effective_apr"], rel=1e-2), (
@@ -321,7 +330,7 @@ class TestWorstCaseAPR:
 
 
 class TestCentsOnDollar:
-    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES + REAL_CONTRACT_FIXTURES)
+    @pytest.mark.parametrize("name,terms,expected", ALL_COMPLETE_FIXTURES + MULTI_PRODUCT_FIXTURES)
     def test_cents_on_dollar(self, name, terms, expected):
         result = calculate_cents_on_dollar(terms)
         assert result == pytest.approx(expected["cents_on_dollar"], rel=1e-2), (
@@ -338,23 +347,23 @@ class TestCentsOnDollar:
 
 class TestCostEscalation:
     def test_be_amazing_30_days_late(self):
-        result = calculate_escalated_cost(BE_AMAZING_PO, 30)
-        assert result == pytest.approx(BE_AMAZING_PO_EXPECTED["escalated_cost_30_days"], rel=1e-2)
+        result = calculate_escalated_cost(LUMP_SUM_PO_FINANCING, 30)
+        assert result == pytest.approx(LUMP_SUM_PO_FINANCING_EXPECTED["escalated_cost_30_days"], rel=1e-2)
 
     def test_be_amazing_90_days_late(self):
-        result = calculate_escalated_cost(BE_AMAZING_PO, 90)
-        assert result == pytest.approx(BE_AMAZING_PO_EXPECTED["escalated_cost_90_days"], rel=1e-2)
+        result = calculate_escalated_cost(LUMP_SUM_PO_FINANCING, 90)
+        assert result == pytest.approx(LUMP_SUM_PO_FINANCING_EXPECTED["escalated_cost_90_days"], rel=1e-2)
 
     def test_latin_goodness_30_days_late(self):
-        result = calculate_escalated_cost(LATIN_GOODNESS_RECEIVABLES, 30)
+        result = calculate_escalated_cost(PERCENTAGE_RECEIVABLES, 30)
         assert result == pytest.approx(
-            LATIN_GOODNESS_RECEIVABLES_EXPECTED["escalated_cost_30_days"], rel=1e-2
+            PERCENTAGE_RECEIVABLES_EXPECTED["escalated_cost_30_days"], rel=1e-2
         )
 
     def test_latin_goodness_90_days_late(self):
-        result = calculate_escalated_cost(LATIN_GOODNESS_RECEIVABLES, 90)
+        result = calculate_escalated_cost(PERCENTAGE_RECEIVABLES, 90)
         assert result == pytest.approx(
-            LATIN_GOODNESS_RECEIVABLES_EXPECTED["escalated_cost_90_days"], rel=1e-2
+            PERCENTAGE_RECEIVABLES_EXPECTED["escalated_cost_90_days"], rel=1e-2
         )
 
     def test_no_escalation_without_structure(self):
@@ -362,7 +371,7 @@ class TestCostEscalation:
 
     def test_within_grace_period_no_cost(self):
         """During grace period, no late fees should apply."""
-        result = calculate_escalated_cost(BE_AMAZING_PO, 5)  # Within 7-day grace
+        result = calculate_escalated_cost(LUMP_SUM_PO_FINANCING, 5)  # Within 7-day grace
         assert result is None
 
 
@@ -401,8 +410,34 @@ class TestAnalyzeFinancing:
         assert result.worst_case_term_months is None
         assert result.worst_case_apr is None
 
+    def test_shopify_60_day_minimum(self):
+        result = analyze_financing(PERCENTAGE_60DAY_MINIMUM)
+        assert result.worst_case_term_months == pytest.approx(
+            PERCENTAGE_60DAY_MINIMUM_EXPECTED["worst_case_term_months"], rel=1e-2
+        )
+        assert result.worst_case_apr == pytest.approx(
+            PERCENTAGE_60DAY_MINIMUM_EXPECTED["worst_case_apr"], rel=1e-2
+        )
+
+    def test_square_60_day_minimum(self):
+        result = analyze_financing(PERCENTAGE_WITH_STATED_TERM)
+        assert result.worst_case_term_months == pytest.approx(
+            PERCENTAGE_WITH_STATED_TERM_EXPECTED["worst_case_term_months"], rel=1e-2
+        )
+        assert result.worst_case_apr == pytest.approx(
+            PERCENTAGE_WITH_STATED_TERM_EXPECTED["worst_case_apr"], rel=1e-2
+        )
+
+    def test_ondeck_term_loan(self):
+        result = analyze_financing(FIXED_WEEKLY_TERM_LOAN)
+        assert result.product_type == "term_loan"
+        assert result.effective_apr == pytest.approx(
+            FIXED_WEEKLY_TERM_LOAN_EXPECTED["effective_apr"], rel=1e-2
+        )
+        assert result.payment_amount == FIXED_WEEKLY_TERM_LOAN_EXPECTED["payment_amount"]
+
     def test_po_financing_analysis(self):
-        result = analyze_financing(BE_AMAZING_PO)
+        result = analyze_financing(LUMP_SUM_PO_FINANCING)
         assert result.product_type == "po_financing"
         assert result.effective_apr == pytest.approx(12.0, rel=1e-2)
         assert result.num_payments == 1
@@ -410,7 +445,7 @@ class TestAnalyzeFinancing:
         assert result.escalated_cost_30_days == pytest.approx(7_948.80, rel=1e-2)
 
     def test_receivables_purchase_analysis(self):
-        result = analyze_financing(LATIN_GOODNESS_RECEIVABLES)
+        result = analyze_financing(PERCENTAGE_RECEIVABLES)
         assert result.product_type == "receivables_purchase"
         assert result.effective_apr == pytest.approx(14.79, rel=1e-2)
         assert result.escalated_cost_90_days == pytest.approx(5_739.90, rel=1e-2)

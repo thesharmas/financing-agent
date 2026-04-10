@@ -48,7 +48,7 @@ class FinancingTerms:
     # --- Always present ---
     advance_amount: float  # Principal approved (e.g., $50,000)
     repayment_type: str  # "fixed", "percentage", or "lump_sum"
-    product_type: str = "mca"  # "mca", "receivables_purchase", "po_financing"
+    product_type: str = "mca"  # "mca", "receivables_purchase", "po_financing", "term_loan"
 
     # --- Pricing: at least one must be provided ---
     factor_rate: float | None = None  # e.g., 1.35
@@ -66,7 +66,10 @@ class FinancingTerms:
     # --- May or may not be stated ---
     term_months: float | None = None  # Explicit term if contract states it
     term_days: int | None = None  # Some contracts state days, not months
-    monthly_minimum: float | None = None  # Floor payment (percentage only)
+
+    # --- Minimum payment (percentage-based products) ---
+    minimum_payment: float | None = None  # Floor payment amount
+    minimum_payment_period_days: int = 30  # How often: 30=monthly, 60=bi-monthly
 
     # --- Fees ---
     origination_fee: float = 0.0  # Flat dollar fee
@@ -323,16 +326,29 @@ def calculate_effective_apr(terms: FinancingTerms) -> float | None:
     return (cost / effective) * (12 / term) * 100
 
 
-def calculate_worst_case_apr(terms: FinancingTerms) -> float | None:
-    """APR based on worst-case term (using monthly minimum).
+def _resolve_monthly_minimum(terms: FinancingTerms) -> float | None:
+    """Convert minimum payment to a monthly equivalent.
 
-    Only applicable for percentage-based with a monthly minimum.
+    Shopify/Square use 60-day minimums, others use 30-day (monthly).
+    Returns monthly equivalent, or None if no minimum is set.
     """
-    if terms.monthly_minimum is None or terms.monthly_minimum == 0:
+    if terms.minimum_payment is None or terms.minimum_payment == 0:
+        return None
+    return terms.minimum_payment * (DAYS_PER_MONTH / terms.minimum_payment_period_days)
+
+
+def calculate_worst_case_apr(terms: FinancingTerms) -> float | None:
+    """APR based on worst-case term (using minimum payment).
+
+    Converts the minimum payment to a monthly rate, then calculates
+    how long repayment would take at that rate.
+    """
+    monthly_min = _resolve_monthly_minimum(terms)
+    if monthly_min is None:
         return None
 
     repayment = calculate_total_repayment(terms)
-    worst_term = repayment / terms.monthly_minimum
+    worst_term = repayment / monthly_min
     cost = calculate_total_cost(terms)
     effective = resolve_effective_advance(terms)
     return (cost / effective) * (12 / worst_term) * 100
@@ -415,8 +431,9 @@ def analyze_financing(terms: FinancingTerms) -> FinancingAnalysis:
     missing = _find_missing_fields(terms)
 
     worst_term = None
-    if terms.monthly_minimum is not None and terms.monthly_minimum > 0:
-        worst_term = repayment / terms.monthly_minimum
+    monthly_min = _resolve_monthly_minimum(terms)
+    if monthly_min is not None:
+        worst_term = repayment / monthly_min
 
     # Cost escalation projections
     esc_desc = None

@@ -15,7 +15,7 @@ from mca_analyzer.predatory import (
     detect_high_apr,
     detect_high_factor_rate,
     detect_high_origination_fee,
-    detect_monthly_minimum,
+    detect_minimum_payment,
     detect_short_term,
 )
 
@@ -150,14 +150,14 @@ class TestHighOriginationFee:
 # --- Monthly Minimum Detection ---
 
 
-class TestMonthlyMinimum:
+class TestMinimumPayment:
     def test_flags_minimum_as_warning(self):
-        flag = detect_monthly_minimum(PERCENTAGE_MIN_MCA)
+        flag = detect_minimum_payment(PERCENTAGE_MIN_MCA)
         assert flag is not None
         assert flag.severity == Severity.WARNING
 
     def test_no_flag_without_minimum(self):
-        flag = detect_monthly_minimum(STANDARD_MCA)
+        flag = detect_minimum_payment(STANDARD_MCA)
         assert flag is None
 
 

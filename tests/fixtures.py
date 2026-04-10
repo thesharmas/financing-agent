@@ -4,7 +4,7 @@ Each fixture represents a realistic offer with pre-calculated
 correct values. These are the source of truth for all evals.
 
 Ground truth math is documented inline so it can be verified by hand.
-Covers three product types: MCA, Receivables Purchase, PO Financing.
+Covers four product types: MCA, Receivables Purchase, PO Financing, Term Loan.
 """
 
 from mca_analyzer.calculations import BUSINESS_DAYS_PER_MONTH, CostEscalation, FinancingTerms
@@ -152,7 +152,8 @@ PERCENTAGE_MIN_MCA = FinancingTerms(
     factor_rate=1.35,
     holdback_pct=0.15,
     estimated_monthly_revenue=80_000,
-    monthly_minimum=5_000,
+    minimum_payment=5_000,
+    minimum_payment_period_days=30,
 )
 PERCENTAGE_MIN_MCA_EXPECTED = {
     "factor_rate": 1.35,
@@ -165,6 +166,7 @@ PERCENTAGE_MIN_MCA_EXPECTED = {
     "num_payments": 118,
     "effective_apr": 74.67,
     "cents_on_dollar": 0.35,
+    # worst case: monthly_min = 5000, worst_term = 67500 / 5000 = 13.5
     "worst_case_term_months": 13.5,
     "worst_case_apr": 31.11,
 }
@@ -226,97 +228,155 @@ INCOMPLETE_MCA_EXPECTED = {
 
 
 # ============================================================================
-# REAL CONTRACT FIXTURES
+# MULTI-PRODUCT FIXTURES
 # ============================================================================
 
-# --- FIXTURE 11: Be Amazing / SpringCash — PO Financing ---
-# Source: Be_Amazing_Contract - SpringCash.pdf
-# $1M PO advance, $80K flat fee, 240-day term, lump sum repayment from Target
-BE_AMAZING_PO = FinancingTerms(
+# --- FIXTURE 11: PO financing — lump sum repayment, late fee escalation ---
+LUMP_SUM_PO_FINANCING = FinancingTerms(
     advance_amount=1_000_000,
     repayment_type="lump_sum",
     product_type="po_financing",
     stated_cost=80_000,
-    term_days=240,  # 240 calendar days = 8 months
+    term_days=240,
     third_party_payer="Target",
     cost_escalation=CostEscalation(
-        rate=0.0016,  # 0.16% per 5-day period
+        rate=0.0016,
         period_days=5,
-        grace_period_days=7,  # 7-day grace after Day 240
+        grace_period_days=7,
         description="0.16% per 5-day period (approx 12% annualized) on unpaid balance after 7-day grace period",
     ),
 )
-BE_AMAZING_PO_EXPECTED = {
+LUMP_SUM_PO_FINANCING_EXPECTED = {
     "product_type": "po_financing",
-    # factor: (1000000 + 80000) / 1000000 = 1.08
     "factor_rate": 1.08,
     "origination_fee": 0.0,
     "effective_advance": 1_000_000.0,
-    # 1000000 × 1.08
     "total_repayment": 1_080_000.0,
-    # 1080000 - 1000000
     "total_cost": 80_000.0,
-    # 240 days / 30 = 8 months
     "estimated_term_months": 8.0,
-    # Lump sum = 1 payment of the full amount
     "num_payments": 1,
     "payment_amount": 1_080_000.0,
-    # (80000 / 1000000) × (12 / 8) × 100 = 12.0
     "effective_apr": 12.0,
-    # 80000 / 1000000
     "cents_on_dollar": 0.08,
-    # Late fee projections:
-    # 30 days late: billable = 30 - 7 = 23 days, periods = 23/5 = 4.6
-    # extra cost = 1080000 × 0.0016 × 4.6 = $7,948.80
+    # 30 days late: billable = 23, periods = 4.6, 1080000 × 0.0016 × 4.6
     "escalated_cost_30_days": 7_948.80,
-    # 90 days late: billable = 90 - 7 = 83 days, periods = 83/5 = 16.6
-    # extra cost = 1080000 × 0.0016 × 16.6 = $28,684.80
+    # 90 days late: billable = 83, periods = 16.6, 1080000 × 0.0016 × 16.6
     "escalated_cost_90_days": 28_684.80,
 }
 
-# --- FIXTURE 12: Latin Goodness Foods / SpringCash — Receivables Purchase ---
-# Source: Latin Goodness Foods - Receivables Agreement - SpringCash.pdf
-# $150K advance, $1,849.32 discount (stated cost), ~30-day term
-# 50% holdback, hybrid repayment (receivables then daily ACH fallback)
-LATIN_GOODNESS_RECEIVABLES = FinancingTerms(
+# --- FIXTURE 12: Receivables purchase — percentage holdback, short term ---
+PERCENTAGE_RECEIVABLES = FinancingTerms(
     advance_amount=150_000,
     repayment_type="percentage",
     product_type="receivables_purchase",
     stated_cost=1_849.32,
-    term_days=30,  # Estimated 30 days based on Collection Date
-    holdback_pct=0.50,  # 50% "Specified Percentage"
-    estimated_monthly_revenue=10_123.29 * BUSINESS_DAYS_PER_MONTH,  # daily rev × 21
-    fixed_payment=5_061.64,  # Fallback daily ACH if not paid by Collection Date
+    term_days=30,
+    holdback_pct=0.50,
+    estimated_monthly_revenue=10_123.29 * BUSINESS_DAYS_PER_MONTH,
+    fixed_payment=5_061.64,
     third_party_payer="Retailer and Distributor",
     cost_escalation=CostEscalation(
-        rate=0.0042,  # 0.42% additional receivables per 10-day period
+        rate=0.0042,
         period_days=10,
-        grace_period_days=0,  # Starts on Collection Date
+        grace_period_days=0,
         description="0.42% additional receivables per 10-day period after Collection Date",
     ),
 )
-LATIN_GOODNESS_RECEIVABLES_EXPECTED = {
+PERCENTAGE_RECEIVABLES_EXPECTED = {
     "product_type": "receivables_purchase",
-    # factor: (150000 + 1849.32) / 150000 = 1.01233
     "factor_rate": 1.01233,
     "origination_fee": 0.0,
     "effective_advance": 150_000.0,
-    # 150000 + 1849.32
     "total_repayment": 151_849.32,
-    # stated cost
     "total_cost": 1_849.32,
-    # 30 days / 30 = 1 month
     "estimated_term_months": 1.0,
-    # Stated APR in contract is 15% — let's verify:
-    # (1849.32 / 150000) × (12 / 1) × 100 = 14.79
     "effective_apr": 14.79,
-    # 1849.32 / 150000
     "cents_on_dollar": 0.01233,
-    # Late fee projections:
-    # 30 days late: 30/10 = 3 periods, 151849.32 × 0.0042 × 3 = $1,913.30
     "escalated_cost_30_days": 1_913.30,
-    # 90 days late: 90/10 = 9 periods, 151849.32 × 0.0042 × 9 = $5,739.90
     "escalated_cost_90_days": 5_739.90,
+}
+
+# --- FIXTURE 13: Term loan — fixed weekly, fee deducted from advance ---
+FIXED_WEEKLY_TERM_LOAN = FinancingTerms(
+    advance_amount=200_000,
+    repayment_type="fixed",
+    product_type="term_loan",
+    stated_cost=42_200.14,
+    payment_frequency="weekly",
+    fixed_payment=6_210.26,
+    origination_fee=5_000,
+    fee_deducted_from_advance=True,
+    cost_escalation=CostEscalation(
+        rate=0.0,
+        period_days=1,
+        description="$10 late fee (max $50 per 20-day period)",
+    ),
+)
+FIXED_WEEKLY_TERM_LOAN_EXPECTED = {
+    "product_type": "term_loan",
+    "factor_rate": 1.21100,
+    "origination_fee": 5_000.0,
+    "effective_advance": 195_000.0,
+    "total_repayment": 242_200.14,
+    "total_cost": 47_200.14,
+    # term from fixed payment: 242200.14 / (6210.26 × 4.33) = 9.006
+    "estimated_term_months": 9.006,
+    "num_payments": 39,
+    "payment_amount": 6_210.26,
+    "effective_apr": 32.27,
+    "cents_on_dollar": 0.2421,
+}
+
+# --- FIXTURE 14: Percentage loan with 60-day minimum, term from milestones ---
+PERCENTAGE_60DAY_MINIMUM = FinancingTerms(
+    advance_amount=500_000,
+    repayment_type="percentage",
+    product_type="term_loan",
+    stated_cost=65_000,
+    holdback_pct=0.14,
+    term_days=360,
+    minimum_payment=94_167,
+    minimum_payment_period_days=60,
+)
+PERCENTAGE_60DAY_MINIMUM_EXPECTED = {
+    "product_type": "term_loan",
+    "factor_rate": 1.13,
+    "origination_fee": 0.0,
+    "effective_advance": 500_000.0,
+    "total_repayment": 565_000.0,
+    "total_cost": 65_000.0,
+    "estimated_term_months": 12.0,
+    "effective_apr": 13.0,
+    "cents_on_dollar": 0.13,
+    # monthly_equiv = 94167 × (30/60) = 47083.50, worst_term = 565000 / 47083.50
+    "worst_case_term_months": 12.0,
+    "worst_case_apr": 13.0,
+}
+
+# --- FIXTURE 15: Percentage loan with stated term and 60-day minimum ---
+PERCENTAGE_WITH_STATED_TERM = FinancingTerms(
+    advance_amount=249_300,
+    repayment_type="percentage",
+    product_type="term_loan",
+    stated_cost=36_273,
+    holdback_pct=0.1925,
+    term_months=18,
+    minimum_payment=15_865.16,
+    minimum_payment_period_days=60,
+)
+PERCENTAGE_WITH_STATED_TERM_EXPECTED = {
+    "product_type": "term_loan",
+    "factor_rate": 1.14552,
+    "origination_fee": 0.0,
+    "effective_advance": 249_300.0,
+    "total_repayment": 285_573.0,
+    "total_cost": 36_273.0,
+    "estimated_term_months": 18.0,
+    "effective_apr": 9.70,
+    "cents_on_dollar": 0.14552,
+    # monthly_equiv = 15865.16 × (30/60) = 7932.58, worst_term = 285573 / 7932.58
+    "worst_case_term_months": 36.0,
+    "worst_case_apr": 4.85,
 }
 
 
@@ -420,7 +480,7 @@ SAMPLE_OFFER_TEXT_3_EXPECTED = {
     "repayment_type": "percentage",
     "holdback_pct": 0.15,
     "estimated_monthly_revenue": 80_000.0,
-    "monthly_minimum": 5_000.0,
+    "minimum_payment": 5_000.0,
     "origination_fee": 0.0,
     "has_confession_of_judgment": False,
 }

@@ -55,7 +55,7 @@ RISK_WEIGHTS = {
     "short_term": 0.15,
     "high_fee_warning": 0.10,
     "high_fee_danger": 0.20,
-    "monthly_minimum": 0.10,
+    "minimum_payment": 0.10,
     "confession_of_judgment": 0.30,
 }
 
@@ -171,20 +171,22 @@ def detect_high_origination_fee(terms: FinancingTerms) -> RedFlag | None:
     return None
 
 
-def detect_monthly_minimum(terms: FinancingTerms) -> RedFlag | None:
-    """Flag monthly minimum payment on percentage-based MCAs.
+def detect_minimum_payment(terms: FinancingTerms) -> RedFlag | None:
+    """Flag minimum payment on percentage-based products.
 
-    A monthly minimum undercuts the main advantage of percentage-based
+    A minimum payment undercuts the main advantage of percentage-based
     repayment — that payments flex down when sales are slow.
     """
-    if terms.monthly_minimum is not None and terms.monthly_minimum > 0:
+    if terms.minimum_payment is not None and terms.minimum_payment > 0:
+        period = terms.minimum_payment_period_days
+        period_label = "month" if period == 30 else f"{period} days"
         return RedFlag(
-            name="monthly_minimum",
+            name="minimum_payment",
             severity=Severity.WARNING,
             description=(
-                f"Monthly minimum payment of ${terms.monthly_minimum:,.0f} removes the "
-                f"flexibility that makes percentage-based repayment attractive. "
-                f"In slow months, you still owe this amount regardless of sales."
+                f"Minimum payment of ${terms.minimum_payment:,.0f} every {period_label} "
+                f"removes the flexibility that makes percentage-based repayment attractive. "
+                f"In slow periods, you still owe this amount regardless of sales."
             ),
         )
     return None
@@ -225,7 +227,7 @@ def analyze_predatory(
         detect_daily_payments(terms),
         detect_short_term(terms),
         detect_high_origination_fee(terms),
-        detect_monthly_minimum(terms),
+        detect_minimum_payment(terms),
         detect_confession_of_judgment(has_coj),
     ]
 
