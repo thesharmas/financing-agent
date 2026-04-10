@@ -1,0 +1,20 @@
+[project]
+name = "mca-analyzer"
+version = "0.1.0"
+description = "MCA offer analysis agent with MCP server"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.52.0",
+    "mcp[cli]>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "deepeval>=2.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
