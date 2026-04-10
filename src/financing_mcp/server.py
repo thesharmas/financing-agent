@@ -11,9 +11,11 @@ Run remotely (SSE for Managed Agent):
     python -m financing_mcp.server --transport sse --port 8000
 """
 
+import os
 from dataclasses import asdict
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.server import TransportSecuritySettings
 
 from financing_mcp.benchmarks import classify_offer, get_benchmarks
 from financing_mcp.calculations import (
@@ -27,6 +29,10 @@ from financing_mcp.calculations import (
 )
 from financing_mcp.predatory import analyze_predatory
 
+# Build allowed hosts from env var (comma-separated) for Cloud Run deployment
+_allowed_hosts = os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if os.environ.get("MCP_ALLOWED_HOSTS") else []
+_allowed_hosts.extend(["localhost", "127.0.0.1"])
+
 mcp = FastMCP(
     "financing-analyzer",
     instructions=(
@@ -35,6 +41,10 @@ mcp = FastMCP(
         "Always call analyze_financing first to get the numbers, then "
         "detect_predatory to check for red flags, then get_market_benchmarks "
         "to contextualize the offer."
+    ),
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_allowed_hosts,
     ),
 )
 
