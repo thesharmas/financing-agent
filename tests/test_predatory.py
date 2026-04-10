@@ -15,12 +15,15 @@ from mca_analyzer.predatory import (
     detect_high_apr,
     detect_high_factor_rate,
     detect_high_origination_fee,
+    detect_monthly_minimum,
     detect_short_term,
 )
 
 from .fixtures import (
     AGGRESSIVE_MCA,
     AGGRESSIVE_MCA_EXPECTED,
+    PERCENTAGE_MIN_MCA,
+    PERCENTAGE_MIN_MCA_EXPECTED,
     PREDATORY_MCA,
     PREDATORY_MCA_EXPECTED,
     REASONABLE_MCA,
@@ -36,7 +39,7 @@ from .fixtures import (
 class TestHighFactorRate:
     def test_flags_factor_above_1_4_as_warning(self):
         terms = MCATerms(
-            advance_amount=10_000, factor_rate=1.42, term_months=6, payment_frequency="daily"
+            advance_amount=10_000, repayment_type="fixed", factor_rate=1.42,
         )
         flag = detect_high_factor_rate(terms)
         assert flag is not None
@@ -53,7 +56,7 @@ class TestHighFactorRate:
 
     def test_no_flag_at_boundary(self):
         terms = MCATerms(
-            advance_amount=10_000, factor_rate=1.40, term_months=6, payment_frequency="daily"
+            advance_amount=10_000, repayment_type="fixed", factor_rate=1.40,
         )
         flag = detect_high_factor_rate(terms)
         assert flag is None  # 1.4 is the threshold, not flagged at exactly 1.4
@@ -90,6 +93,15 @@ class TestDailyPayments:
         flag = detect_daily_payments(REASONABLE_MCA)  # weekly
         assert flag is None
 
+    def test_no_flag_for_percentage(self):
+        """Percentage-based MCAs don't have a fixed payment frequency to flag."""
+        terms = MCATerms(
+            advance_amount=50_000, repayment_type="percentage", factor_rate=1.35,
+            holdback_pct=0.15, estimated_monthly_revenue=80_000,
+        )
+        flag = detect_daily_payments(terms)
+        assert flag is None
+
 
 # --- Short Term Detection ---
 
@@ -103,6 +115,13 @@ class TestShortTerm:
     def test_no_flag_for_normal_term(self):
         flag = detect_short_term(STANDARD_MCA)  # 6 months
         assert flag is None
+
+    def test_no_flag_when_term_unknown(self):
+        terms = MCATerms(
+            advance_amount=50_000, repayment_type="fixed", factor_rate=1.35,
+        )
+        flag = detect_short_term(terms)
+        assert flag is None  # Can't flag what we don't know
 
 
 # --- High Origination Fee Detection ---
@@ -120,15 +139,26 @@ class TestHighOriginationFee:
 
     def test_flags_4pct_as_warning(self):
         terms = MCATerms(
-            advance_amount=10_000,
-            factor_rate=1.30,
-            term_months=6,
-            payment_frequency="daily",
+            advance_amount=10_000, repayment_type="fixed", factor_rate=1.30,
             origination_fee_pct=0.04,
         )
         flag = detect_high_origination_fee(terms)
         assert flag is not None
         assert flag.severity == Severity.WARNING
+
+
+# --- Monthly Minimum Detection ---
+
+
+class TestMonthlyMinimum:
+    def test_flags_minimum_as_warning(self):
+        flag = detect_monthly_minimum(PERCENTAGE_MIN_MCA)
+        assert flag is not None
+        assert flag.severity == Severity.WARNING
+
+    def test_no_flag_without_minimum(self):
+        flag = detect_monthly_minimum(STANDARD_MCA)
+        assert flag is None
 
 
 # --- Confession of Judgment ---
