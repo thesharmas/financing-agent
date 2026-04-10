@@ -31,6 +31,42 @@ def load_config() -> dict:
         return json.load(f)
 
 
+# Anthropic API limits for PDF uploads
+MAX_PDF_SIZE_MB = 32
+MAX_PDF_SIZE_BYTES = MAX_PDF_SIZE_MB * 1024 * 1024
+
+
+def validate_pdf(pdf_path: str) -> None:
+    """Validate PDF file before sending to the API.
+
+    Checks:
+    - File exists
+    - File is a PDF (by extension and magic bytes)
+    - File size is under 32MB (API limit)
+    """
+    if not os.path.exists(pdf_path):
+        print(f"ERROR: File not found: {pdf_path}")
+        sys.exit(1)
+
+    if not pdf_path.lower().endswith(".pdf"):
+        print(f"ERROR: File must be a PDF: {pdf_path}")
+        sys.exit(1)
+
+    file_size = os.path.getsize(pdf_path)
+    if file_size > MAX_PDF_SIZE_BYTES:
+        size_mb = file_size / (1024 * 1024)
+        print(f"ERROR: PDF is {size_mb:.1f}MB — exceeds {MAX_PDF_SIZE_MB}MB API limit")
+        print("Consider splitting the document into smaller sections")
+        sys.exit(1)
+
+    # Check PDF magic bytes
+    with open(pdf_path, "rb") as f:
+        header = f.read(5)
+    if header != b"%PDF-":
+        print(f"ERROR: File does not appear to be a valid PDF: {pdf_path}")
+        sys.exit(1)
+
+
 def read_pdf_as_base64(pdf_path: str) -> str:
     """Read a PDF file and return base64-encoded content."""
     with open(pdf_path, "rb") as f:
@@ -38,7 +74,10 @@ def read_pdf_as_base64(pdf_path: str) -> str:
 
 
 def build_message_content(pdf_path: str | None, text_message: str) -> list[dict]:
-    """Build the content array for the user message."""
+    """Build the content array for the user message.
+
+    PDF is placed before text per Anthropic best practices.
+    """
     content = []
 
     if pdf_path:
@@ -52,6 +91,7 @@ def build_message_content(pdf_path: str | None, text_message: str) -> list[dict]
                 "data": pdf_data,
             },
             "title": filename,
+            "cache_control": {"type": "ephemeral"},
         })
 
     content.append({
@@ -136,9 +176,7 @@ def main():
     if args.text:
         content = build_message_content(None, args.text)
     else:
-        if not os.path.exists(args.pdf):
-            print(f"ERROR: File not found: {args.pdf}")
-            sys.exit(1)
+        validate_pdf(args.pdf)
         content = build_message_content(args.pdf, args.message)
 
     run_session(config, content)
