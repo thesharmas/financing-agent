@@ -145,3 +145,6 @@ Thumbs.db
 
 # Sample contracts (sensitive/proprietary documents)
 sample_contracts/
+
+# DeepEval cache
+.deepeval/

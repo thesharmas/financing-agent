@@ -411,8 +411,10 @@ SAMPLE_OFFER_TEXT_1_EXPECTED = {
     "advance_amount": 50_000.0,
     "factor_rate": 1.35,
     "total_repayment": 67_500.0,
+    # stated_cost not explicitly in contract — Claude may infer it, but not required
     "term_months": 6,
     "payment_frequency": "daily",
+    "repayment_type": "fixed",
     "daily_payment": 535.71,
     "origination_fee": 0.0,
     "has_confession_of_judgment": True,
@@ -443,8 +445,10 @@ SAMPLE_OFFER_TEXT_2_EXPECTED = {
     "advance_amount": 30_000.0,
     "factor_rate": 1.49,
     "total_repayment": 44_700.0,
+    # stated_cost not explicitly in contract — derivable but not required
     "term_months": 4,
     "payment_frequency": "daily",
+    "repayment_type": "fixed",
     "daily_payment": 532.14,
     "origination_fee": 900.0,
     "has_confession_of_judgment": False,
