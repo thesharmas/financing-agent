@@ -54,8 +54,6 @@ class AnalyzeRequest(BaseModel):
 class AnalyzeResponse(BaseModel):
     analysis: str
     tool_calls: list[dict]
-    input_tokens: int
-    output_tokens: int
 
 
 # ---------------------------------------------------------------------------
@@ -123,9 +121,12 @@ async def analyze_streaming(
 
         for event in analyze_pdf_stream(req.pdf, req.message, req.title):
             if event["type"] == "done":
-                total_input = event["input_tokens"]
-                total_output = event["output_tokens"]
-            yield f"data: {json.dumps(event)}\n\n"
+                total_input = event.get("input_tokens", 0)
+                total_output = event.get("output_tokens", 0)
+                # Send done without token counts
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            else:
+                yield f"data: {json.dumps(event)}\n\n"
 
         # Update usage after stream completes
         increment_usage(doc_id, total_input, total_output)
@@ -155,8 +156,6 @@ async def analyze_sync(
     return AnalyzeResponse(
         analysis=result.full_text,
         tool_calls=result.tool_calls,
-        input_tokens=result.input_tokens,
-        output_tokens=result.output_tokens,
     )
 
 

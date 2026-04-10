@@ -89,15 +89,17 @@ def increment_usage(doc_id: str, input_tokens: int = 0, output_tokens: int = 0) 
 
 
 def get_usage(doc_id: str) -> dict | None:
-    """Get usage stats for a client."""
+    """Get client-facing usage stats (no token counts — those are internal)."""
     db = _get_db()
     doc = db.collection(FIRESTORE_COLLECTION).document(doc_id).get()
     if doc.exists:
         data = doc.to_dict()
+        usage = data.get("usage", {})
         return {
             "name": data["name"],
             "company": data["company"],
             "created_at": data["created_at"],
-            "usage": data["usage"],
+            "total_calls": usage.get("total_calls", 0),
+            "last_called_at": usage.get("last_called_at"),
         }
     return None
