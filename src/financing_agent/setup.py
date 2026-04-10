@@ -127,7 +127,13 @@ def setup():
         ],
         tools=[
             {"type": "agent_toolset_20260401"},
-            {"type": "mcp_toolset", "mcp_server_name": "financing"},
+            {
+                "type": "mcp_toolset",
+                "mcp_server_name": "financing",
+                "default_config": {
+                    "permission_policy": {"type": "always_allow"},
+                },
+            },
         ],
     )
     print(f"   Agent ID: {agent.id} (version {agent.version})")
