@@ -6,8 +6,8 @@ These test the detection functions directly — no LLM involved.
 
 import pytest
 
-from mca_analyzer.calculations import FinancingTerms
-from mca_analyzer.predatory import (
+from financing_mcp.calculations import FinancingTerms
+from financing_mcp.predatory import (
     Severity,
     analyze_predatory,
     detect_confession_of_judgment,

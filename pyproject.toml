@@ -1,7 +1,7 @@
 [project]
-name = "mca-analyzer"
+name = "financing-mcp"
 version = "0.1.0"
-description = "MCA offer analysis agent with MCP server"
+description = "SMB financing analysis MCP server"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.52.0",

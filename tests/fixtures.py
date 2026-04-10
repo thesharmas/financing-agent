@@ -7,7 +7,7 @@ Ground truth math is documented inline so it can be verified by hand.
 Covers four product types: MCA, Receivables Purchase, PO Financing, Term Loan.
 """
 
-from mca_analyzer.calculations import BUSINESS_DAYS_PER_MONTH, CostEscalation, FinancingTerms
+from financing_mcp.calculations import BUSINESS_DAYS_PER_MONTH, CostEscalation, FinancingTerms
 
 # ============================================================================
 # MCA FIXTURES

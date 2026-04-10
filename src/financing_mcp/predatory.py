@@ -12,7 +12,7 @@ Severity levels:
 from dataclasses import dataclass
 from enum import Enum
 
-from mca_analyzer.calculations import FinancingTerms, resolve_factor_rate, resolve_origination_fee
+from financing_mcp.calculations import FinancingTerms, resolve_factor_rate, resolve_origination_fee
 
 
 class Severity(Enum):

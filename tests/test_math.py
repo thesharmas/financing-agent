@@ -7,7 +7,7 @@ All must pass at 100% accuracy. Math errors destroy trust.
 
 import pytest
 
-from mca_analyzer.calculations import (
+from financing_mcp.calculations import (
     FinancingTerms,
     analyze_financing,
     calculate_cents_on_dollar,
