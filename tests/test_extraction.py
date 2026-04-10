@@ -69,10 +69,13 @@ extraction_completeness = GEval(
     evaluation_steps=[
         "Compare the 'actual output' JSON against the 'expected output' JSON.",
         "Check that every field present in the expected output is also present "
-        "in the actual output.",
-        "Missing fields should be heavily penalized.",
-        "Extra fields that are reasonable (e.g., funder name, contract type) "
-        "should not be penalized.",
+        "in the actual output with a non-null value.",
+        "A field present in the expected output but missing or null in the actual output "
+        "should be penalized, UNLESS the expected value is 0 and the field is absent "
+        "(treating absence as zero is acceptable for fee fields).",
+        "Extra fields in the actual output (not in expected) should NOT be penalized.",
+        "Fields present in actual output with null that aren't in expected output are fine.",
+        "Integer vs float type differences do NOT matter.",
     ],
     evaluation_params=[
         LLMTestCaseParams.ACTUAL_OUTPUT,
@@ -90,11 +93,15 @@ extraction_accuracy = GEval(
     evaluation_steps=[
         "Compare each numeric value in 'actual output' against 'expected output'.",
         "Values must match exactly or within 1% relative tolerance.",
+        "Integer vs float differences do NOT matter — 50000 and 50000.0 are the same value.",
+        "null vs 0 are acceptable equivalents for fee fields.",
         "String values (like payment_frequency, repayment_type) must match "
         "semantically — e.g., 'daily' matches 'Daily ACH', 'percentage' matches "
         "'Percentage of sales'.",
         "Boolean values (like has_confession_of_judgment) must match exactly.",
-        "Each incorrect value should be heavily penalized.",
+        "Each genuinely incorrect value should be heavily penalized.",
+        "Extra fields in the actual output that are NOT in the expected output "
+        "should NOT be penalized — extracting additional correct information is good.",
     ],
     evaluation_params=[
         LLMTestCaseParams.ACTUAL_OUTPUT,
