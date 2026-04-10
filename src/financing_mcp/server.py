@@ -344,8 +344,11 @@ def _analysis_to_dict(analysis: FinancingAnalysis) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Health check (skips auth)
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    mcp.run()
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request):
+    from starlette.responses import JSONResponse
+    return JSONResponse({"status": "ok", "service": "financing-mcp"})
