@@ -88,6 +88,58 @@ def increment_usage(doc_id: str, input_tokens: int = 0, output_tokens: int = 0) 
     })
 
 
+def log_run(
+    client_doc_id: str,
+    pdf_title: str,
+    message: str,
+    output: str,
+    tool_calls: list[dict],
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+) -> str:
+    """Log an analysis run for eval tracking. Returns the run document ID."""
+    db = _get_db()
+    now = datetime.now(timezone.utc).isoformat()
+
+    doc_data = {
+        "client_doc_id": client_doc_id,
+        "pdf_title": pdf_title,
+        "message": message,
+        "output": output,
+        "tool_calls": tool_calls,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "created_at": now,
+        "eval_status": "pending",  # pending → evaluated
+        "eval_scores": {},
+    }
+
+    _, doc_ref = db.collection("financing_runs").add(doc_data)
+    return doc_ref.id
+
+
+def get_pending_runs(limit: int = 50) -> list[dict]:
+    """Get runs that haven't been evaluated yet."""
+    db = _get_db()
+    docs = (
+        db.collection("financing_runs")
+        .where("eval_status", "==", "pending")
+        .limit(limit)
+        .stream()
+    )
+    return [{"doc_id": doc.id, **doc.to_dict()} for doc in docs]
+
+
+def save_eval_scores(run_doc_id: str, scores: dict) -> None:
+    """Save eval scores for a run and mark it as evaluated."""
+    db = _get_db()
+    db.collection("financing_runs").document(run_doc_id).update({
+        "eval_scores": scores,
+        "eval_status": "evaluated",
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
 def get_usage(doc_id: str) -> dict | None:
     """Get client-facing usage stats (no token counts — those are internal)."""
     db = _get_db()

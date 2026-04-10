@@ -15,6 +15,7 @@ from financing_proxy.auth import generate_api_key
 from financing_proxy.firestore import (
     get_usage,
     increment_usage,
+    log_run,
     register_client,
     validate_api_key,
 )
@@ -118,18 +119,34 @@ async def analyze_streaming(
     def event_stream():
         total_input = 0
         total_output = 0
+        full_text = []
+        tool_names = []
 
         for event in analyze_pdf_stream(req.pdf, req.message, req.title):
-            if event["type"] == "done":
+            if event["type"] == "text":
+                full_text.append(event["content"])
+                yield f"data: {json.dumps(event)}\n\n"
+            elif event["type"] == "tool_use":
+                tool_names.append({"name": event["name"]})
+                yield f"data: {json.dumps(event)}\n\n"
+            elif event["type"] == "done":
                 total_input = event.get("input_tokens", 0)
                 total_output = event.get("output_tokens", 0)
-                # Send done without token counts
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
             else:
                 yield f"data: {json.dumps(event)}\n\n"
 
-        # Update usage after stream completes
+        # Update usage and log the run for eval
         increment_usage(doc_id, total_input, total_output)
+        log_run(
+            client_doc_id=doc_id,
+            pdf_title=req.title,
+            message=req.message,
+            output="".join(full_text),
+            tool_calls=tool_names,
+            input_tokens=total_input,
+            output_tokens=total_output,
+        )
 
     return StreamingResponse(
         event_stream(),
@@ -151,6 +168,15 @@ async def analyze_sync(
     result = analyze_pdf_sync(req.pdf, req.message, req.title)
     increment_usage(
         client["doc_id"], result.input_tokens, result.output_tokens
+    )
+    log_run(
+        client_doc_id=client["doc_id"],
+        pdf_title=req.title,
+        message=req.message,
+        output=result.full_text,
+        tool_calls=result.tool_calls,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
     )
 
     return AnalyzeResponse(
