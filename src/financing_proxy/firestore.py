@@ -144,6 +144,52 @@ def save_eval_scores(run_doc_id: str, scores: dict) -> None:
     })
 
 
+def get_eval_runs(status: str | None = None, limit: int = 20) -> list[dict]:
+    """Get eval runs, optionally filtered by status. Returns summary (no PDF data)."""
+    db = _get_db()
+    query = db.collection("financing_runs")
+    if status:
+        query = query.where("eval_status", "==", status)
+    query = query.order_by("created_at", direction=firestore.Query.DESCENDING).limit(limit)
+
+    runs = []
+    for doc in query.stream():
+        data = doc.to_dict()
+        scores = data.get("eval_scores", {})
+        runs.append({
+            "run_id": doc.id,
+            "pdf_title": data.get("pdf_title"),
+            "created_at": data.get("created_at"),
+            "eval_status": data.get("eval_status"),
+            "evaluated_at": data.get("evaluated_at"),
+            "passed": scores.get("passed"),
+            "agreement_rate": scores.get("agreement_rate"),
+            "disagreements": scores.get("disagreements", []),
+            "error": scores.get("error"),
+        })
+    return runs
+
+
+def get_eval_run_detail(run_id: str) -> dict | None:
+    """Get full eval detail for a single run (no PDF data)."""
+    db = _get_db()
+    doc = db.collection("financing_runs").document(run_id).get()
+    if not doc.exists:
+        return None
+    data = doc.to_dict()
+    return {
+        "run_id": doc.id,
+        "pdf_title": data.get("pdf_title"),
+        "created_at": data.get("created_at"),
+        "eval_status": data.get("eval_status"),
+        "evaluated_at": data.get("evaluated_at"),
+        "eval_scores": data.get("eval_scores", {}),
+        "mcp_tool_inputs": data.get("mcp_tool_inputs", []),
+        "tool_calls": data.get("tool_calls", []),
+        "output_preview": data.get("output", "")[:500],
+    }
+
+
 def get_usage(doc_id: str) -> dict | None:
     """Get client-facing usage stats (no token counts — those are internal)."""
     db = _get_db()

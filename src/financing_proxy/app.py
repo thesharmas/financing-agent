@@ -13,6 +13,8 @@ from pydantic import BaseModel, EmailStr
 from financing_proxy.agent import analyze_pdf_stream, analyze_pdf_sync
 from financing_proxy.auth import generate_api_key
 from financing_proxy.firestore import (
+    get_eval_run_detail,
+    get_eval_runs,
     get_usage,
     increment_usage,
     log_run,
@@ -203,3 +205,45 @@ async def usage(x_api_key: str = Header(...)):
     if stats is None:
         raise HTTPException(status_code=404, detail="Client not found")
     return stats
+
+
+# ---------------------------------------------------------------------------
+# Admin endpoints — eval dashboard
+# Protected by ADMIN_API_KEY env var (separate from client keys)
+# ---------------------------------------------------------------------------
+
+import os
+
+ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY")
+
+
+def require_admin(x_admin_key: str = Header(..., alias="X-Admin-Key")):
+    """Validate admin key."""
+    if not ADMIN_API_KEY:
+        raise HTTPException(status_code=503, detail="Admin endpoints not configured")
+    if x_admin_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid admin key")
+
+
+@app.get("/admin/evals")
+async def list_evals(
+    status: str | None = None,
+    limit: int = 20,
+    x_admin_key: str = Header(..., alias="X-Admin-Key"),
+):
+    """List eval runs. Filter by status: pending, evaluated."""
+    require_admin(x_admin_key)
+    return get_eval_runs(status=status, limit=limit)
+
+
+@app.get("/admin/evals/{run_id}")
+async def get_eval(
+    run_id: str,
+    x_admin_key: str = Header(..., alias="X-Admin-Key"),
+):
+    """Get detailed eval result for a specific run."""
+    require_admin(x_admin_key)
+    detail = get_eval_run_detail(run_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return detail
