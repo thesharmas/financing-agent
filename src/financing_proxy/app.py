@@ -121,6 +121,7 @@ async def analyze_streaming(
         total_output = 0
         full_text = []
         tool_names = []
+        mcp_inputs = []
 
         for event in analyze_pdf_stream(req.pdf, req.message, req.title):
             if event["type"] == "text":
@@ -128,7 +129,10 @@ async def analyze_streaming(
                 yield f"data: {json.dumps(event)}\n\n"
             elif event["type"] == "tool_use":
                 tool_names.append({"name": event["name"]})
-                yield f"data: {json.dumps(event)}\n\n"
+                if event.get("input"):
+                    mcp_inputs.append({"tool": event["name"], "input": event["input"]})
+                # Don't send tool inputs to client
+                yield f"data: {json.dumps({'type': 'tool_use', 'name': event['name']})}\n\n"
             elif event["type"] == "done":
                 total_input = event.get("input_tokens", 0)
                 total_output = event.get("output_tokens", 0)
@@ -136,14 +140,15 @@ async def analyze_streaming(
             else:
                 yield f"data: {json.dumps(event)}\n\n"
 
-        # Update usage and log the run for eval
         increment_usage(doc_id, total_input, total_output)
         log_run(
             client_doc_id=doc_id,
             pdf_title=req.title,
+            pdf_base64=req.pdf,
             message=req.message,
             output="".join(full_text),
             tool_calls=tool_names,
+            mcp_tool_inputs=mcp_inputs,
             input_tokens=total_input,
             output_tokens=total_output,
         )
@@ -172,9 +177,11 @@ async def analyze_sync(
     log_run(
         client_doc_id=client["doc_id"],
         pdf_title=req.title,
+        pdf_base64=req.pdf,
         message=req.message,
         output=result.full_text,
         tool_calls=result.tool_calls,
+        mcp_tool_inputs=result.mcp_tool_inputs,
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
     )

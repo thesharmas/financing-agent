@@ -1,13 +1,18 @@
-"""Background eval worker for production runs.
+"""Background eval worker — double extraction comparison.
 
-Picks up logged runs from Firestore, evaluates them with cheap checks
-(every run) and expensive LLM-judge checks (sampled), then writes
-scores back.
+For every run, sends the same PDF to a second LLM (OpenAI by default)
+with the same extraction prompt. Compares the two extractions field by
+field. If they agree, high confidence the extraction is correct. If
+they disagree, flags which fields differ.
+
+This catches the main risk: garbage in from bad extraction → garbage
+out from correct math. The MCP math will always be "right" for the
+inputs it receives — the question is whether the inputs were right.
 
 Run manually:
     python -m financing_proxy.eval_worker
 
-Run on a schedule (Cloud Scheduler → Cloud Run Job):
+Run on a schedule:
     python -m financing_proxy.eval_worker --once
 
 Run continuously:
@@ -15,162 +20,200 @@ Run continuously:
 """
 
 import argparse
-import random
-import re
+import json
 import time
+
+import openai
 
 from financing_proxy.firestore import get_pending_runs, save_eval_scores
 
-# What percentage of runs get expensive LLM evals (0.0 to 1.0)
-EXPENSIVE_EVAL_SAMPLE_RATE = 0.1  # 10%
+EXTRACTION_PROMPT = """\
+You are a financial document analyst. Extract all key financial terms from the
+following financing offer document. Return ONLY a JSON object with these fields.
 
-EXPECTED_TOOLS = {"analyze_offer", "detect_predatory_terms", "get_market_benchmarks"}
+IMPORTANT: Include ALL fields below. If a field is not present or is zero,
+explicitly include it with value 0 or null. Do not omit fields.
 
+Fields:
+- advance_amount: numeric, the principal/funded amount
+- factor_rate: numeric, the factor rate if stated (null if not stated)
+- total_repayment: numeric, total amount to be repaid
+- stated_cost: numeric, the financing cost/fee/discount amount if stated separately (null if not stated)
+- term_months: numeric, the term in months (null if not stated)
+- payment_frequency: string, "daily" or "weekly" (null if not applicable)
+- repayment_type: string, "fixed", "percentage", or "lump_sum"
+- holdback_pct: numeric (0-1), percentage of sales taken as repayment (null if not applicable)
+- origination_fee: numeric, any origination/processing fee (0 if explicitly no fees)
+- fee_deducted_from_advance: boolean, whether fee was deducted from the advance
+- has_confession_of_judgment: boolean, whether a COJ clause is present or absent
+- product_type: string, "mca", "term_loan", "po_financing", or "receivables_purchase"
 
-# ---------------------------------------------------------------------------
-# Cheap checks — regex/string-based, run on every request
-# ---------------------------------------------------------------------------
+Return ONLY the JSON object, no markdown formatting, no other text.
 
+DOCUMENT:
+{document}
+"""
 
-def check_apr_present(output: str) -> dict:
-    """Check if the output contains a specific APR percentage number.
+# Fields to compare between the two extractions
+COMPARE_FIELDS = [
+    "advance_amount",
+    "factor_rate",
+    "total_repayment",
+    "stated_cost",
+    "term_months",
+    "repayment_type",
+    "holdback_pct",
+    "origination_fee",
+    "fee_deducted_from_advance",
+    "has_confession_of_judgment",
+    "product_type",
+]
 
-    Looks for patterns like "9.7% APR", "APR of 70%", "effective APR: 15%".
-    """
-    patterns = [
-        r"\d+\.?\d*\s*%\s*APR",
-        r"APR\s*(?:of|is|:)\s*(?:approximately\s*)?~?\s*\d+\.?\d*\s*%",
-        r"effective\s+APR\s*(?:of|is|:)?\s*(?:approximately\s*)?~?\s*\*?\*?\d+\.?\d*\s*%",
-    ]
-    for pattern in patterns:
-        if re.search(pattern, output, re.IGNORECASE):
-            return {"score": 1.0, "passed": True, "reason": "APR percentage found in output"}
-
-    return {"score": 0.0, "passed": False, "reason": "No specific APR percentage found in output"}
-
-
-def check_predatory_consistent(output: str, tool_calls: list[dict]) -> dict:
-    """Check if predatory detection results are reflected in the output.
-
-    If detect_predatory_terms was called, the output should mention
-    red flags, warnings, or predatory terms.
-    """
-    called_predatory = any(t.get("name") == "detect_predatory_terms" for t in tool_calls)
-    if not called_predatory:
-        return {"score": 0.5, "passed": True, "reason": "Predatory check not called — skipped"}
-
-    flag_words = ["red flag", "warning", "predatory", "danger", "concerning", "high risk", "caution"]
-    found = [w for w in flag_words if w.lower() in output.lower()]
-
-    if found:
-        return {"score": 1.0, "passed": True, "reason": f"Predatory terms mentioned: {found}"}
-    return {"score": 0.0, "passed": False, "reason": "Predatory check was called but no flags mentioned in output"}
-
-
-def check_tool_calls_complete(tool_calls: list[dict]) -> dict:
-    """Check if the agent called all expected MCP tools."""
-    called = {t.get("name") for t in tool_calls}
-    missing = EXPECTED_TOOLS - called
-
-    if not missing:
-        return {"score": 1.0, "passed": True, "reason": "All expected tools called"}
-
-    return {
-        "score": len(called & EXPECTED_TOOLS) / len(EXPECTED_TOOLS),
-        "passed": False,
-        "reason": f"Missing tool calls: {missing}",
-    }
+# Numeric tolerance for comparison (1%)
+NUMERIC_TOLERANCE = 0.01
 
 
-def run_cheap_checks(run: dict) -> dict:
-    """Run all cheap checks on a run. Returns a dict of scores."""
-    output = run.get("output", "")
-    tool_calls = run.get("tool_calls", [])
-
-    return {
-        "apr_present": check_apr_present(output),
-        "predatory_consistent": check_predatory_consistent(output, tool_calls),
-        "tool_calls_complete": check_tool_calls_complete(tool_calls),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Expensive checks — LLM-as-judge, run on a sample
-# ---------------------------------------------------------------------------
-
-
-def run_expensive_checks(run: dict) -> dict:
-    """Run DeepEval GEval checks on a run. Returns a dict of scores."""
+def extract_with_openai(pdf_base64: str) -> dict | None:
+    """Send the PDF to OpenAI for independent extraction."""
     try:
-        from deepeval.metrics import GEval
-        from deepeval.test_case import LLMTestCase, LLMTestCaseParams
-    except ImportError:
-        return {"_skipped": "deepeval not installed"}
+        client = openai.OpenAI()
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": pdf_base64,
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": EXTRACTION_PROMPT.format(document="[see attached PDF]"),
+                    },
+                ],
+            }],
+        )
+        text = response.choices[0].message.content.strip()
+        # Strip markdown fences if present
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+        return json.loads(text)
+    except Exception as e:
+        return {"_error": str(e)}
 
-    output = run.get("output", "")
 
-    scores = {}
+def get_primary_extraction(mcp_tool_inputs: list[dict]) -> dict | None:
+    """Extract the primary (Claude) extraction from MCP tool inputs.
 
-    # Jargon-free check
-    jargon_metric = GEval(
-        name="Jargon-Free",
-        evaluation_steps=[
-            "Check if financial jargon (factor rate, APR, ACH, holdback, "
-            "origination fee, confession of judgment) is explained in plain English.",
-            "Every technical term must be accompanied by a clear explanation.",
-            "Penalize unexplained jargon.",
-        ],
-        evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT],
-        threshold=0.8,
-    )
-    test_case = LLMTestCase(input="", actual_output=output)
-    jargon_metric.measure(test_case)
-    scores["jargon_free"] = {
-        "score": jargon_metric.score,
-        "passed": jargon_metric.score >= 0.8,
-        "reason": jargon_metric.reason,
+    The agent sends extracted terms to analyze_offer — those inputs
+    are what Claude extracted from the PDF.
+    """
+    for entry in mcp_tool_inputs:
+        if entry.get("tool") == "analyze_offer":
+            return entry.get("input", {})
+    return None
+
+
+def compare_values(val_a, val_b, field_name: str) -> dict:
+    """Compare two extracted values for a single field."""
+    # Both null/None
+    if val_a is None and val_b is None:
+        return {"match": True, "a": val_a, "b": val_b}
+
+    # One null, other not
+    if val_a is None or val_b is None:
+        return {"match": False, "a": val_a, "b": val_b, "reason": "one is null"}
+
+    # Booleans
+    if isinstance(val_a, bool) or isinstance(val_b, bool):
+        return {"match": val_a == val_b, "a": val_a, "b": val_b}
+
+    # Numeric comparison with tolerance
+    if isinstance(val_a, (int, float)) and isinstance(val_b, (int, float)):
+        if val_a == 0 and val_b == 0:
+            return {"match": True, "a": val_a, "b": val_b}
+        if val_a == 0 or val_b == 0:
+            return {"match": False, "a": val_a, "b": val_b, "reason": "one is zero"}
+        ratio = abs(val_a - val_b) / max(abs(val_a), abs(val_b))
+        return {
+            "match": ratio <= NUMERIC_TOLERANCE,
+            "a": val_a,
+            "b": val_b,
+            "difference_pct": round(ratio * 100, 2),
+        }
+
+    # String comparison (case-insensitive)
+    if isinstance(val_a, str) and isinstance(val_b, str):
+        return {"match": val_a.lower() == val_b.lower(), "a": val_a, "b": val_b}
+
+    # Fallback
+    return {"match": str(val_a) == str(val_b), "a": val_a, "b": val_b}
+
+
+def compare_extractions(primary: dict, secondary: dict) -> dict:
+    """Compare two extractions field by field. Returns eval result."""
+    field_results = {}
+    matches = 0
+    total = 0
+
+    for field in COMPARE_FIELDS:
+        val_a = primary.get(field)
+        val_b = secondary.get(field)
+        result = compare_values(val_a, val_b, field)
+        field_results[field] = result
+        if result["match"]:
+            matches += 1
+        total += 1
+
+    agreement_rate = matches / total if total > 0 else 0
+    disagreements = [f for f, r in field_results.items() if not r["match"]]
+
+    return {
+        "agreement_rate": round(agreement_rate, 3),
+        "passed": agreement_rate >= 0.9,
+        "total_fields": total,
+        "matching_fields": matches,
+        "disagreements": disagreements,
+        "field_details": field_results,
     }
-
-    # Shows tradeoffs check
-    tradeoffs_metric = GEval(
-        name="Shows Tradeoffs",
-        evaluation_steps=[
-            "Check if the output presents tradeoffs — pros AND cons.",
-            "A simple verdict without explaining what the borrower gains "
-            "and gives up is a failure.",
-        ],
-        evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT],
-        threshold=0.7,
-    )
-    test_case = LLMTestCase(input="", actual_output=output)
-    tradeoffs_metric.measure(test_case)
-    scores["shows_tradeoffs"] = {
-        "score": tradeoffs_metric.score,
-        "passed": tradeoffs_metric.score >= 0.7,
-        "reason": tradeoffs_metric.reason,
-    }
-
-    return scores
-
-
-# ---------------------------------------------------------------------------
-# Worker loop
-# ---------------------------------------------------------------------------
 
 
 def evaluate_run(run: dict) -> dict:
-    """Evaluate a single run with cheap + optionally expensive checks."""
-    scores = run_cheap_checks(run)
+    """Evaluate a single run via double extraction."""
+    pdf_base64 = run.get("pdf_base64")
+    if not pdf_base64:
+        return {
+            "passed": False,
+            "error": "No PDF data in run log — cannot evaluate",
+        }
 
-    # Sample expensive evals
-    if random.random() < EXPENSIVE_EVAL_SAMPLE_RATE:
-        expensive = run_expensive_checks(run)
-        scores.update(expensive)
-        scores["_expensive_eval"] = True
-    else:
-        scores["_expensive_eval"] = False
+    mcp_tool_inputs = run.get("mcp_tool_inputs", [])
+    primary = get_primary_extraction(mcp_tool_inputs)
+    if not primary:
+        return {
+            "passed": False,
+            "error": "No analyze_offer tool input found — cannot get primary extraction",
+        }
 
-    return scores
+    # Get secondary extraction from OpenAI
+    secondary = extract_with_openai(pdf_base64)
+    if secondary is None or "_error" in secondary:
+        error = secondary.get("_error", "unknown") if secondary else "null response"
+        return {
+            "passed": False,
+            "error": f"Secondary extraction failed: {error}",
+        }
+
+    # Compare
+    comparison = compare_extractions(primary, secondary)
+    comparison["primary_model"] = "claude (managed agent)"
+    comparison["secondary_model"] = "gpt-4o"
+
+    return comparison
 
 
 def process_pending_runs():
@@ -186,13 +229,15 @@ def process_pending_runs():
             scores = evaluate_run(run)
             save_eval_scores(run["doc_id"], scores)
 
-            passed = all(
-                s.get("passed", True)
-                for k, s in scores.items()
-                if isinstance(s, dict) and "passed" in s
-            )
-            status = "PASS" if passed else "FAIL"
-            print(f"  {run['doc_id'][:12]}... [{status}] {run.get('pdf_title', 'unknown')}")
+            if "error" in scores:
+                print(f"  {run['doc_id'][:12]}... [ERROR] {scores['error']}")
+            else:
+                status = "PASS" if scores["passed"] else "FAIL"
+                rate = scores["agreement_rate"]
+                disagreements = scores.get("disagreements", [])
+                print(f"  {run['doc_id'][:12]}... [{status}] {rate:.0%} agreement — {run.get('pdf_title', 'unknown')}")
+                if disagreements:
+                    print(f"    Disagreements: {disagreements}")
         except Exception as e:
             print(f"  {run['doc_id'][:12]}... [ERROR] {e}")
 
@@ -200,21 +245,16 @@ def process_pending_runs():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Eval worker for production runs")
+    parser = argparse.ArgumentParser(description="Eval worker — double extraction comparison")
     parser.add_argument("--once", action="store_true", help="Process pending runs and exit")
     parser.add_argument("--poll", action="store_true", help="Poll continuously")
     parser.add_argument("--interval", type=int, default=60, help="Poll interval in seconds")
-    parser.add_argument("--sample-rate", type=float, default=0.1,
-                        help="Fraction of runs to get expensive LLM evals (0-1)")
     args = parser.parse_args()
-
-    global EXPENSIVE_EVAL_SAMPLE_RATE
-    EXPENSIVE_EVAL_SAMPLE_RATE = args.sample_rate
 
     if args.once or not args.poll:
         process_pending_runs()
     else:
-        print(f"Polling every {args.interval}s (expensive eval sample rate: {args.sample_rate})")
+        print(f"Polling every {args.interval}s")
         while True:
             process_pending_runs()
             time.sleep(args.interval)

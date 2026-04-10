@@ -91,9 +91,11 @@ def increment_usage(doc_id: str, input_tokens: int = 0, output_tokens: int = 0) 
 def log_run(
     client_doc_id: str,
     pdf_title: str,
+    pdf_base64: str,
     message: str,
     output: str,
     tool_calls: list[dict],
+    mcp_tool_inputs: list[dict] | None = None,
     input_tokens: int = 0,
     output_tokens: int = 0,
 ) -> str:
@@ -104,13 +106,15 @@ def log_run(
     doc_data = {
         "client_doc_id": client_doc_id,
         "pdf_title": pdf_title,
+        "pdf_base64": pdf_base64,
         "message": message,
         "output": output,
         "tool_calls": tool_calls,
+        "mcp_tool_inputs": mcp_tool_inputs or [],
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "created_at": now,
-        "eval_status": "pending",  # pending → evaluated
+        "eval_status": "pending",
         "eval_scores": {},
     }
 

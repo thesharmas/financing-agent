@@ -5,7 +5,6 @@ Managed Agent. The proxy calls this — clients never talk to
 Anthropic directly.
 """
 
-import base64
 from collections.abc import Generator
 from dataclasses import dataclass, field
 
@@ -30,6 +29,7 @@ class AnalysisResult:
 
     full_text: str = ""
     tool_calls: list[dict] = field(default_factory=list)
+    mcp_tool_inputs: list[dict] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
 
@@ -41,12 +41,11 @@ def analyze_pdf_stream(
 
     Yields dicts with:
       {"type": "text", "content": "..."}
-      {"type": "tool_use", "name": "analyze_offer"}
+      {"type": "tool_use", "name": "analyze_offer", "input": {...}}
       {"type": "done", "input_tokens": N, "output_tokens": N}
     """
     client = _get_client()
 
-    # Create session
     session = client.beta.sessions.create(
         agent=get_agent_id(),
         environment_id=get_environment_id(),
@@ -58,7 +57,6 @@ def analyze_pdf_stream(
     output_tokens = 0
 
     with client.beta.sessions.events.stream(session.id) as stream:
-        # Send PDF + message
         client.beta.sessions.events.send(
             session.id,
             events=[{
@@ -85,9 +83,14 @@ def analyze_pdf_stream(
                         if hasattr(block, "text"):
                             yield {"type": "text", "content": block.text}
                 case "agent.mcp_tool_use":
-                    yield {"type": "tool_use", "name": event.name}
+                    tool_input = event.input if hasattr(event, "input") else {}
+                    yield {
+                        "type": "tool_use",
+                        "name": event.name,
+                        "input": tool_input,
+                    }
                 case "agent.tool_use":
-                    yield {"type": "tool_use", "name": event.name}
+                    yield {"type": "tool_use", "name": event.name, "input": {}}
                 case "span.model_request_end":
                     if hasattr(event, "model_usage") and event.model_usage:
                         input_tokens += getattr(event.model_usage, "input_tokens", 0)
@@ -118,6 +121,11 @@ def analyze_pdf_sync(
                 result.full_text += event["content"]
             case "tool_use":
                 result.tool_calls.append({"name": event["name"]})
+                if event.get("input"):
+                    result.mcp_tool_inputs.append({
+                        "tool": event["name"],
+                        "input": event["input"],
+                    })
             case "done":
                 result.input_tokens = event["input_tokens"]
                 result.output_tokens = event["output_tokens"]
