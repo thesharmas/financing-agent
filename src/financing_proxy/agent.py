@@ -72,7 +72,6 @@ def analyze_pdf_stream(
                             "data": pdf_base64,
                         },
                         "title": title,
-                        "cache_control": {"type": "ephemeral"},
                     },
                     {"type": "text", "text": message},
                 ],
