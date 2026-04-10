@@ -142,3 +142,6 @@ Thumbs.db
 
 # Ruff / Ruff cache
 .ruff_cache/
+
+# Sample contracts (sensitive/proprietary documents)
+sample_contracts/
