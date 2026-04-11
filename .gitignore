@@ -152,6 +152,9 @@ sample_contracts/
 # Agent config (contains resource IDs)
 src/financing_agent/config.json
 
+# Text files (drafts, notes)
+*.txt
+
 # SDK build artifacts
 sdk/typescript/node_modules/
 sdk/typescript/dist/
