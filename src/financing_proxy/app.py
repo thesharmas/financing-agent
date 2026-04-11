@@ -5,6 +5,7 @@ Handles registration, authentication, analysis, and usage tracking.
 """
 
 import json
+import threading
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -12,6 +13,7 @@ from pydantic import BaseModel, EmailStr
 
 from financing_proxy.agent import analyze_pdf_stream, analyze_pdf_sync
 from financing_proxy.auth import generate_api_key
+from financing_proxy.eval_worker import evaluate_run_by_id
 from financing_proxy.firestore import (
     get_eval_run_detail,
     get_eval_runs,
@@ -27,6 +29,16 @@ app = FastAPI(
     description="Analyze SMB financing offers — MCA, term loans, PO financing, receivables",
     version="0.1.0",
 )
+
+
+def _run_eval_async(run_id: str):
+    """Fire off eval in a background thread — doesn't block the response."""
+    def _eval():
+        try:
+            evaluate_run_by_id(run_id)
+        except Exception as e:
+            print(f"Background eval failed for {run_id}: {e}")
+    threading.Thread(target=_eval, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +155,7 @@ async def analyze_streaming(
                 yield f"data: {json.dumps(event)}\n\n"
 
         increment_usage(doc_id, total_input, total_output)
-        log_run(
+        run_id = log_run(
             client_doc_id=doc_id,
             pdf_title=req.title,
             pdf_base64=req.pdf,
@@ -154,6 +166,7 @@ async def analyze_streaming(
             input_tokens=total_input,
             output_tokens=total_output,
         )
+        _run_eval_async(run_id)
 
     return StreamingResponse(
         event_stream(),
@@ -176,7 +189,7 @@ async def analyze_sync(
     increment_usage(
         client["doc_id"], result.input_tokens, result.output_tokens
     )
-    log_run(
+    run_id = log_run(
         client_doc_id=client["doc_id"],
         pdf_title=req.title,
         pdf_base64=req.pdf,
@@ -187,6 +200,7 @@ async def analyze_sync(
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
     )
+    _run_eval_async(run_id)
 
     return AnalyzeResponse(
         analysis=result.full_text,

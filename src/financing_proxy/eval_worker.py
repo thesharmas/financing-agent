@@ -74,29 +74,53 @@ NUMERIC_TOLERANCE = 0.01
 
 
 def extract_with_openai(pdf_base64: str) -> dict | None:
-    """Send the PDF to OpenAI for independent extraction."""
+    """Send the PDF to OpenAI for independent extraction.
+
+    OpenAI doesn't support inline PDF documents like Anthropic.
+    Upload the file first, then reference it in the message.
+    """
+    import base64
+    import tempfile
+    import os
+
     try:
         client = openai.OpenAI()
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "document",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "application/pdf",
-                            "data": pdf_base64,
+
+        # Write base64 PDF to a temp file for upload
+        pdf_bytes = base64.b64decode(pdf_base64)
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(pdf_bytes)
+            tmp_path = f.name
+
+        try:
+            # Upload to OpenAI Files API
+            with open(tmp_path, "rb") as f:
+                file_obj = client.files.create(file=f, purpose="assistants")
+
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "file",
+                            "file": {"file_id": file_obj.id},
                         },
-                    },
-                    {
-                        "type": "text",
-                        "text": EXTRACTION_PROMPT.format(document="[see attached PDF]"),
-                    },
-                ],
-            }],
-        )
+                        {
+                            "type": "text",
+                            "text": EXTRACTION_PROMPT.format(document="[see attached PDF]"),
+                        },
+                    ],
+                }],
+            )
+        finally:
+            os.unlink(tmp_path)
+            # Clean up uploaded file
+            try:
+                client.files.delete(file_obj.id)
+            except Exception:
+                pass
+
         text = response.choices[0].message.content.strip()
         # Strip markdown fences if present
         if text.startswith("```"):
@@ -214,6 +238,32 @@ def evaluate_run(run: dict) -> dict:
     comparison["secondary_model"] = "gpt-4o"
 
     return comparison
+
+
+def evaluate_run_by_id(run_id: str) -> dict:
+    """Evaluate a specific run by ID. Called from the proxy after each request."""
+    from financing_proxy.firestore import save_eval_scores
+
+    from google.cloud import firestore as fs
+    from financing_proxy.config import GCP_PROJECT
+
+    db = fs.Client(project=GCP_PROJECT)
+    doc = db.collection("financing_runs").document(run_id).get()
+    if not doc.exists:
+        scores = {"passed": False, "error": f"Run {run_id} not found"}
+        save_eval_scores(run_id, scores)
+        return scores
+
+    run = {"doc_id": doc.id, **doc.to_dict()}
+    scores = evaluate_run(run)
+    save_eval_scores(run_id, scores)
+
+    status = "PASS" if scores.get("passed") else "FAIL"
+    print(f"Eval [{status}] {run_id[:12]}... {run.get('pdf_title', 'unknown')}")
+    if scores.get("disagreements"):
+        print(f"  Disagreements: {scores['disagreements']}")
+
+    return scores
 
 
 def process_pending_runs():
