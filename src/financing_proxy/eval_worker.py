@@ -142,15 +142,28 @@ def get_primary_extraction(mcp_tool_inputs: list[dict]) -> dict | None:
     return None
 
 
+def _is_empty(val) -> bool:
+    """Check if a value is semantically empty (None, 0, False, "")."""
+    if val is None:
+        return True
+    if val is False:
+        return True
+    if isinstance(val, (int, float)) and val == 0:
+        return True
+    if isinstance(val, str) and val.strip() == "":
+        return True
+    return False
+
+
 def compare_values(val_a, val_b, field_name: str) -> dict:
     """Compare two extracted values for a single field."""
-    # Both null/None
-    if val_a is None and val_b is None:
+    # Both empty — agree (covers None/None, None/0, None/False, 0/False, etc.)
+    if _is_empty(val_a) and _is_empty(val_b):
         return {"match": True, "a": val_a, "b": val_b}
 
-    # One null, other not
-    if val_a is None or val_b is None:
-        return {"match": False, "a": val_a, "b": val_b, "reason": "one is null"}
+    # One empty, other has a real value — disagree
+    if _is_empty(val_a) or _is_empty(val_b):
+        return {"match": False, "a": val_a, "b": val_b, "reason": "one is empty/null"}
 
     # Booleans
     if isinstance(val_a, bool) or isinstance(val_b, bool):
@@ -158,10 +171,6 @@ def compare_values(val_a, val_b, field_name: str) -> dict:
 
     # Numeric comparison with tolerance
     if isinstance(val_a, (int, float)) and isinstance(val_b, (int, float)):
-        if val_a == 0 and val_b == 0:
-            return {"match": True, "a": val_a, "b": val_b}
-        if val_a == 0 or val_b == 0:
-            return {"match": False, "a": val_a, "b": val_b, "reason": "one is zero"}
         ratio = abs(val_a - val_b) / max(abs(val_a), abs(val_b))
         return {
             "match": ratio <= NUMERIC_TOLERANCE,
