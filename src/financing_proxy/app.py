@@ -200,7 +200,13 @@ async def analyze_sync(
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
     )
-    _run_eval_async(run_id)
+
+    # Run eval inline for sync endpoint (adds ~15s but Cloud Run
+    # kills background threads when the instance scales down)
+    try:
+        evaluate_run_by_id(run_id)
+    except Exception as e:
+        print(f"Eval failed for {run_id}: {e}")
 
     return AnalyzeResponse(
         analysis=result.full_text,
