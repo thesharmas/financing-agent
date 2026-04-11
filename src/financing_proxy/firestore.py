@@ -1,13 +1,19 @@
 """Firestore client for client registration and usage tracking."""
 
+import base64
+import hashlib
+import os
 from datetime import datetime, timezone
 
-from google.cloud import firestore
+from google.cloud import firestore, storage
 
 from financing_proxy.auth import get_key_prefix, hash_api_key
 from financing_proxy.config import FIRESTORE_COLLECTION, GCP_PROJECT
 
+PDF_BUCKET = os.environ.get("PDF_BUCKET", "financing-agent-pdfs")
+
 _db = None
+_gcs = None
 
 
 def _get_db() -> firestore.Client:
@@ -16,6 +22,47 @@ def _get_db() -> firestore.Client:
     if _db is None:
         _db = firestore.Client(project=GCP_PROJECT)
     return _db
+
+
+def _get_gcs() -> storage.Client:
+    """Lazy-initialize GCS client."""
+    global _gcs
+    if _gcs is None:
+        _gcs = storage.Client(project=GCP_PROJECT)
+    return _gcs
+
+
+def store_pdf(pdf_base64: str) -> tuple[str, str, bool]:
+    """Store PDF in GCS, deduped by content hash.
+
+    Returns (gcs_uri, content_hash, is_new).
+    If the PDF already exists, skips upload and returns the existing URI.
+    """
+    pdf_bytes = base64.b64decode(pdf_base64)
+    content_hash = hashlib.sha256(pdf_bytes).hexdigest()
+    blob_name = f"{content_hash}.pdf"
+    gcs_uri = f"gs://{PDF_BUCKET}/{blob_name}"
+
+    bucket = _get_gcs().bucket(PDF_BUCKET)
+    blob = bucket.blob(blob_name)
+
+    if blob.exists():
+        return gcs_uri, content_hash, False
+
+    blob.upload_from_string(pdf_bytes, content_type="application/pdf")
+    return gcs_uri, content_hash, True
+
+
+def fetch_pdf_from_gcs(gcs_uri: str) -> str:
+    """Fetch PDF from GCS and return as base64 string."""
+    # Parse gs://bucket/blob
+    path = gcs_uri.replace("gs://", "")
+    bucket_name, blob_name = path.split("/", 1)
+
+    bucket = _get_gcs().bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    pdf_bytes = blob.download_as_bytes()
+    return base64.standard_b64encode(pdf_bytes).decode()
 
 
 def register_client(
@@ -103,10 +150,15 @@ def log_run(
     db = _get_db()
     now = datetime.now(timezone.utc).isoformat()
 
+    # Store PDF in GCS (deduped by content hash)
+    gcs_uri, content_hash, is_new = store_pdf(pdf_base64)
+
     doc_data = {
         "client_doc_id": client_doc_id,
         "pdf_title": pdf_title,
-        "pdf_base64": pdf_base64,
+        "pdf_gcs_uri": gcs_uri,
+        "pdf_content_hash": content_hash,
+        "pdf_is_new": is_new,
         "message": message,
         "output": output,
         "tool_calls": tool_calls,

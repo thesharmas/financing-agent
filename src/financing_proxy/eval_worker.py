@@ -217,11 +217,21 @@ def compare_extractions(primary: dict, secondary: dict) -> dict:
 
 def evaluate_run(run: dict) -> dict:
     """Evaluate a single run via double extraction."""
-    pdf_base64 = run.get("pdf_base64")
-    if not pdf_base64:
+    # Fetch PDF from GCS
+    gcs_uri = run.get("pdf_gcs_uri")
+    if not gcs_uri:
         return {
             "passed": False,
-            "error": "No PDF data in run log — cannot evaluate",
+            "error": "No PDF GCS URI in run log — cannot evaluate",
+        }
+
+    from financing_proxy.firestore import fetch_pdf_from_gcs
+    try:
+        pdf_base64 = fetch_pdf_from_gcs(gcs_uri)
+    except Exception as e:
+        return {
+            "passed": False,
+            "error": f"Failed to fetch PDF from GCS: {e}",
         }
 
     mcp_tool_inputs = run.get("mcp_tool_inputs", [])
