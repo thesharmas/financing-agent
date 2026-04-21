@@ -11,13 +11,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-proxy = [
-    "fastapi>=0.110.0",
-    "google-cloud-firestore>=2.16.0",
-    "google-cloud-storage>=2.16.0",
-    "pydantic[email]>=2.0",
-    "openai>=1.0.0",
-]
 dev = [
     "pytest>=8.0",
     "deepeval>=2.0",
