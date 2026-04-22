@@ -1,77 +1,75 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { usePrivy, useWallets } from '@privy-io/react-auth'
 import {
   createPublicClient,
   createWalletClient,
   custom,
-  formatUnits,
   http,
   parseUnits,
   type Address,
   type Hash,
 } from 'viem'
-import { tempoTestnet, isChainConfigured } from '@/lib/chain'
-import {
-  ERC20_ABI,
-  TREASURY_ADDRESS,
-  USDC_ADDRESS,
-  USDC_DECIMALS,
-} from '@/lib/usdc'
+import { isChainConfigured, tempoTestnet } from '@/lib/chain'
+import { ERC20_ABI, TREASURY_ADDRESS, USDC_ADDRESS, USDC_DECIMALS } from '@/lib/usdc'
 
-type VerifyResult = {
-  ok: boolean
-  from?: string
-  to?: string
-  amount?: string
-  status?: string
-  blockNumber?: string
-  error?: string
-}
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const PRICE_USDC = process.env.NEXT_PUBLIC_PRICE_USDC || '2'
+
+type Stage = 'idle' | 'paying' | 'waiting' | 'analyzing' | 'done' | 'error'
+
+type StreamEvent =
+  | { type: 'run'; data: { run_id: string; gcs_uri: string } }
+  | { type: 'text'; data: string }
+  | { type: 'tool_use'; data: { name: string; input: Record<string, unknown> } }
+  | { type: 'done'; data: { input_tokens: number; output_tokens: number } }
+  | { type: 'error'; data: string }
 
 export default function Page() {
-  const { ready, authenticated, login, logout, user } = usePrivy()
+  const { ready, authenticated, login, logout } = usePrivy()
   const { wallets } = useWallets()
+  const wallet = wallets.find((w) => w.walletClientType === 'privy')
+  const userAddress = wallet?.address as Address | undefined
 
-  const embeddedWallet = wallets.find((w) => w.walletClientType === 'privy')
-  const userAddress = embeddedWallet?.address as Address | undefined
-
-  const [balance, setBalance] = useState<string>('—')
-  const [amount, setAmount] = useState<string>('1')
-  const [recipient, setRecipient] = useState<string>(TREASURY_ADDRESS || '')
-  const [sending, setSending] = useState(false)
-  const [txHash, setTxHash] = useState<Hash | null>(null)
+  const [file, setFile] = useState<File | null>(null)
+  const [stage, setStage] = useState<Stage>('idle')
   const [error, setError] = useState<string | null>(null)
-  const [verifyInput, setVerifyInput] = useState<string>('')
-  const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null)
+  const [txHash, setTxHash] = useState<Hash | null>(null)
+  const [runId, setRunId] = useState<string | null>(null)
+  const [analysis, setAnalysis] = useState<string>('')
+  const [toolCalls, setToolCalls] = useState<{ name: string }[]>([])
+  const [tokens, setTokens] = useState<{ input: number; output: number } | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const configured = isChainConfigured() && !!USDC_ADDRESS && !!TREASURY_ADDRESS
 
-  useEffect(() => {
-    if (!userAddress || !configured) return
-    const publicClient = createPublicClient({
-      chain: tempoTestnet,
-      transport: http(),
-    })
-    publicClient
-      .readContract({
-        address: USDC_ADDRESS,
-        abi: ERC20_ABI,
-        functionName: 'balanceOf',
-        args: [userAddress],
-      })
-      .then((raw) => setBalance(formatUnits(raw as bigint, USDC_DECIMALS)))
-      .catch((e) => setBalance(`error: ${e.message}`))
-  }, [userAddress, txHash, configured])
+  const analyzeDisabled = useMemo(
+    () => !file || !wallet || !configured || stage === 'paying' || stage === 'waiting' || stage === 'analyzing',
+    [file, wallet, configured, stage],
+  )
 
-  async function sendUsdc() {
+  const reset = () => {
+    setStage('idle')
     setError(null)
     setTxHash(null)
-    if (!embeddedWallet || !userAddress) return
-    setSending(true)
+    setRunId(null)
+    setAnalysis('')
+    setToolCalls([])
+    setTokens(null)
+  }
+
+  const handleAnalyze = useCallback(async () => {
+    if (!file || !wallet || !userAddress) return
+    reset()
+
     try {
-      const provider = await embeddedWallet.getEthereumProvider()
+      // 1. Read PDF as base64
+      const pdfBase64 = await fileToBase64(file)
+
+      // 2. Pay via Privy-signed ERC-20 transfer
+      setStage('paying')
+      const provider = await wallet.getEthereumProvider()
       const walletClient = createWalletClient({
         account: userAddress,
         chain: tempoTestnet,
@@ -81,124 +79,208 @@ export default function Page() {
         address: USDC_ADDRESS,
         abi: ERC20_ABI,
         functionName: 'transfer',
-        args: [recipient as Address, parseUnits(amount, USDC_DECIMALS)],
+        args: [TREASURY_ADDRESS, parseUnits(PRICE_USDC, USDC_DECIMALS)],
       })
       setTxHash(hash)
-      setVerifyInput(hash)
-    } catch (e: any) {
-      setError(e?.shortMessage || e?.message || String(e))
-    } finally {
-      setSending(false)
-    }
-  }
 
-  async function verify() {
-    setVerifyResult(null)
-    try {
-      const res = await fetch('/api/verify', {
+      // 3. Wait for on-chain confirmation (Tempo finalizes in ~0.6s)
+      setStage('waiting')
+      const publicClient = createPublicClient({ chain: tempoTestnet, transport: http() })
+      await publicClient.waitForTransactionReceipt({ hash })
+
+      // 4. POST to backend, stream SSE response
+      setStage('analyzing')
+      const res = await fetch(`${API_URL}/analyze`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ tx_hash: verifyInput }),
+        body: JSON.stringify({
+          tx_hash: hash,
+          pdf_base64: pdfBase64,
+          title: file.name,
+        }),
       })
-      setVerifyResult(await res.json())
+      if (!res.ok || !res.body) {
+        const text = await res.text().catch(() => '')
+        throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
+      }
+
+      for await (const ev of parseSse(res.body)) {
+        switch (ev.type) {
+          case 'run':
+            setRunId(ev.data.run_id)
+            break
+          case 'text':
+            setAnalysis((prev) => prev + ev.data)
+            break
+          case 'tool_use':
+            setToolCalls((prev) => [...prev, { name: ev.data.name }])
+            break
+          case 'done':
+            setTokens({ input: ev.data.input_tokens, output: ev.data.output_tokens })
+            break
+          case 'error':
+            throw new Error(ev.data)
+        }
+      }
+      setStage('done')
     } catch (e: any) {
-      setVerifyResult({ ok: false, error: e?.message || String(e) })
+      setStage('error')
+      setError(e?.shortMessage || e?.message || String(e))
     }
-  }
+  }, [file, wallet, userAddress])
 
   if (!ready) return <Shell>Loading…</Shell>
 
   return (
     <Shell>
-      <h1 className="text-2xl font-semibold mb-2">Phase 1 — Privy + Tempo spike</h1>
-      <p className="text-sm text-gray-600 mb-6">
-        Learning goal: log in, see a wallet, send test USDC, verify server-side.
-      </p>
+      <div className="flex items-start justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-semibold">Financing offer analyzer</h1>
+          <p className="text-sm text-gray-600 mt-1">
+            Upload a PDF financing offer, pay {PRICE_USDC} testUSDC, get a plain-English analysis.
+          </p>
+        </div>
+        {authenticated && (
+          <button className="text-xs underline text-gray-500" onClick={() => logout()}>
+            Log out
+          </button>
+        )}
+      </div>
 
       {!configured && (
-        <div className="mb-6 p-3 rounded border border-amber-300 bg-amber-50 text-sm">
-          <strong>Config missing.</strong> Copy <code>.env.local.example</code> to{' '}
-          <code>.env.local</code> and fill in the Tempo values. See the README.
-        </div>
+        <Banner tone="amber">
+          Config missing — copy <code>.env.local.example</code> to <code>.env.local</code>.
+        </Banner>
       )}
 
       {!authenticated ? (
-        <button
-          className="px-4 py-2 rounded bg-black text-white"
-          onClick={() => login()}
-        >
-          Log in
+        <button className="px-4 py-2 rounded bg-black text-white" onClick={() => login()}>
+          Log in to get started
         </button>
       ) : (
         <div className="space-y-6">
-          <Row label="User ID" value={user?.id ?? '—'} />
-          <Row label="Wallet address" value={userAddress ?? 'provisioning…'} mono />
-          <Row label="Balance" value={`${balance} testUSDC`} />
+          <section className="p-4 rounded border bg-white">
+            <div className="text-xs text-gray-500 mb-2">Your wallet</div>
+            <div className="font-mono text-xs break-all">{userAddress || 'provisioning…'}</div>
+          </section>
 
           <section className="p-4 rounded border bg-white space-y-3">
-            <h2 className="font-medium">Send testUSDC</h2>
-            <label className="block text-sm">
-              <span className="text-gray-600">Recipient</span>
-              <input
-                className="mt-1 w-full font-mono text-xs border rounded px-2 py-1"
-                value={recipient}
-                onChange={(e) => setRecipient(e.target.value)}
-              />
-            </label>
-            <label className="block text-sm">
-              <span className="text-gray-600">Amount (testUSDC)</span>
-              <input
-                className="mt-1 w-32 border rounded px-2 py-1"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-              />
-            </label>
-            <button
-              className="px-4 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
-              disabled={sending || !userAddress || !recipient}
-              onClick={sendUsdc}
-            >
-              {sending ? 'Sending…' : `Send ${amount} testUSDC`}
-            </button>
-            {txHash && (
-              <div className="text-xs font-mono break-all">
-                tx: <span className="text-blue-700">{txHash}</span>
+            <h2 className="font-medium">1. Upload PDF</h2>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/pdf"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              className="text-sm"
+            />
+            {file && (
+              <div className="text-sm text-gray-600">
+                {file.name} — {(file.size / 1024).toFixed(1)} KB
               </div>
             )}
-            {error && (
-              <div className="text-sm text-red-700 whitespace-pre-wrap">{error}</div>
-            )}
           </section>
 
           <section className="p-4 rounded border bg-white space-y-3">
-            <h2 className="font-medium">Verify on backend</h2>
-            <input
-              className="w-full font-mono text-xs border rounded px-2 py-1"
-              placeholder="0x…"
-              value={verifyInput}
-              onChange={(e) => setVerifyInput(e.target.value)}
-            />
+            <h2 className="font-medium">2. Pay & analyze</h2>
             <button
-              className="px-4 py-2 rounded bg-green-600 text-white disabled:opacity-50"
-              disabled={!verifyInput}
-              onClick={verify}
+              className="px-4 py-2 rounded bg-blue-600 text-white disabled:opacity-50"
+              disabled={analyzeDisabled}
+              onClick={handleAnalyze}
             >
-              Verify
+              {stage === 'paying' && 'Signing payment…'}
+              {stage === 'waiting' && 'Waiting for confirmation…'}
+              {stage === 'analyzing' && 'Analyzing…'}
+              {(stage === 'idle' || stage === 'done' || stage === 'error') &&
+                `Analyze for ${PRICE_USDC} testUSDC`}
             </button>
-            {verifyResult && (
-              <pre className="text-xs bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto">
-                {JSON.stringify(verifyResult, null, 2)}
-              </pre>
+            {txHash && (
+              <div className="text-xs font-mono break-all text-gray-600">
+                tx: {txHash}
+              </div>
             )}
+            {runId && (
+              <div className="text-xs text-gray-600">run: {runId}</div>
+            )}
+            {error && <Banner tone="red">{error}</Banner>}
           </section>
 
-          <button className="text-sm underline text-gray-600" onClick={() => logout()}>
-            Log out
-          </button>
+          {(analysis || toolCalls.length > 0) && (
+            <section className="p-4 rounded border bg-white space-y-3">
+              <h2 className="font-medium">Analysis</h2>
+              {toolCalls.length > 0 && (
+                <div className="text-xs text-gray-500">
+                  tools: {toolCalls.map((t) => t.name).join(', ')}
+                </div>
+              )}
+              <pre className="whitespace-pre-wrap text-sm leading-relaxed font-sans">
+                {analysis}
+                {stage === 'analyzing' && <span className="animate-pulse">▍</span>}
+              </pre>
+              {tokens && (
+                <div className="text-xs text-gray-400">
+                  {tokens.input} input tokens / {tokens.output} output tokens
+                </div>
+              )}
+            </section>
+          )}
+
+          <div className="text-xs text-gray-400">
+            Debug tool at <a href="/debug" className="underline">/debug</a>.
+          </div>
         </div>
       )}
     </Shell>
   )
+}
+
+async function fileToBase64(file: File): Promise<string> {
+  const buf = await file.arrayBuffer()
+  // Avoid call-stack overflow on large files
+  let binary = ''
+  const bytes = new Uint8Array(buf)
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(binary)
+}
+
+async function* parseSse(body: ReadableStream<Uint8Array>): AsyncIterable<StreamEvent> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    // Split on blank-line boundary between events
+    let idx: number
+    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+      const frame = buffer.slice(0, idx)
+      buffer = buffer.slice(idx + 2)
+      const event = parseFrame(frame)
+      if (event) yield event
+    }
+  }
+}
+
+function parseFrame(frame: string): StreamEvent | null {
+  let eventName = 'message'
+  const dataLines: string[] = []
+  for (const line of frame.split('\n')) {
+    if (line.startsWith('event:')) eventName = line.slice(6).trim()
+    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
+  }
+  if (!dataLines.length) return null
+  const raw = dataLines.join('\n')
+  try {
+    const data = JSON.parse(raw)
+    return { type: eventName, data } as StreamEvent
+  } catch {
+    return { type: eventName, data: raw } as StreamEvent
+  }
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
@@ -209,11 +291,16 @@ function Shell({ children }: { children: React.ReactNode }) {
   )
 }
 
-function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="flex items-start gap-3 text-sm">
-      <span className="w-32 shrink-0 text-gray-500">{label}</span>
-      <span className={`${mono ? 'font-mono text-xs' : ''} break-all`}>{value}</span>
-    </div>
-  )
+function Banner({
+  children,
+  tone,
+}: {
+  children: React.ReactNode
+  tone: 'amber' | 'red'
+}) {
+  const palette =
+    tone === 'amber'
+      ? 'border-amber-300 bg-amber-50 text-amber-900'
+      : 'border-red-300 bg-red-50 text-red-900'
+  return <div className={`p-3 rounded border text-sm ${palette}`}>{children}</div>
 }
