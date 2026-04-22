@@ -7,8 +7,10 @@ defaulting to something wrong.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,11 @@ class Settings:
     payments_collection: str
     runs_collection: str
 
+    # Managed agent
+    agent_id: str
+    environment_id: str
+    vault_id: str
+
     # CORS
     allowed_origins: list[str]
 
@@ -39,7 +46,28 @@ def _req(name: str) -> str:
     return v
 
 
+def _load_agent_ids() -> tuple[str, str, str]:
+    """Prefer env vars; fall back to AGENT_CONFIG_PATH JSON file if set."""
+    env_ids = (
+        os.environ.get("AGENT_ID"),
+        os.environ.get("ENVIRONMENT_ID"),
+        os.environ.get("VAULT_ID"),
+    )
+    if all(env_ids):
+        return env_ids  # type: ignore[return-value]
+
+    path = os.environ.get("AGENT_CONFIG_PATH")
+    if path:
+        data = json.loads(Path(path).read_text())
+        return data["agent_id"], data["environment_id"], data["vault_id"]
+
+    raise RuntimeError(
+        "missing agent IDs: set AGENT_ID/ENVIRONMENT_ID/VAULT_ID or AGENT_CONFIG_PATH"
+    )
+
+
 def load_settings() -> Settings:
+    agent_id, environment_id, vault_id = _load_agent_ids()
     return Settings(
         tempo_rpc_url=os.environ.get(
             "TEMPO_RPC_URL", "https://rpc.moderato.tempo.xyz"
@@ -54,6 +82,9 @@ def load_settings() -> Settings:
             "FIRESTORE_PAYMENTS_COLLECTION", "payments"
         ),
         runs_collection=os.environ.get("FIRESTORE_RUNS_COLLECTION", "analysis_runs"),
+        agent_id=agent_id,
+        environment_id=environment_id,
+        vault_id=vault_id,
         allowed_origins=os.environ.get(
             "ALLOWED_ORIGINS", "http://localhost:3000"
         ).split(","),
